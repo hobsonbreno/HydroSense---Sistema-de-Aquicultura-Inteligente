@@ -1,0 +1,59 @@
+# Build directories
+build/
+**/build/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!pico_sdk_import.cmake
+
+# Compiled binaries
+*.bin
+*.elf
+*.hex
+*.uf2
+*.dis
+*.map
+
+# Object files
+*.o
+*.obj
+
+# Dependency files
+*.d
+
+# Generated files
+generated/
+pico-sdk/
+pioasm/
+pioasm-install/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Logs
+*.log
+
+# FreeRTOS build artifacts (keep source)
+FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/build/
