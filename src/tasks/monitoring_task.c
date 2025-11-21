@@ -1,18 +1,30 @@
 #include "monitoring_task.h"
-#include "system_config.h"
-#include "sensors/temperature_sensor.h"
-#include "sensors/ph_sensor.h"
-#include "sensors/turbidity_sensor.h"
-#include "sensors/water_level_sensor.h"
+#include "../hydrosense_utils.h"
+
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
 #include "semphr.h"
 #include <stdio.h>
+#include <system_config.h>
 
-extern SystemStatus_t g_system_status;
+#ifndef AUTOMATION_INTERVAL
+#define AUTOMATION_INTERVAL 10000 // 10 segundos
+#endif
+
 extern SemaphoreHandle_t system_data_mutex;
 extern QueueHandle_t alert_queue;
+
+void temperature_sensor_init(void);
+void ph_sensor_init(void);
+void turbidity_sensor_init(void);
+void water_level_sensor_init(void);
+float temperature_read_value(void);
+float ph_read_value(void);
+float turbidity_read_value(void);
+float water_level_read_percent(void);
+void check_alerts(void);
+void update_system_uptime(void);
 
 void monitoring_task(void *pvParameters) {
     printf("📊 Task de monitoramento iniciada\n");

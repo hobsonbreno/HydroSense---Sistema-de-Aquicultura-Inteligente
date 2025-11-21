@@ -1,13 +1,15 @@
 #include "automation_task.h"
-#include "system_config.h"
+#include "hydrosense_system.h"
 #include "monitoring_task.h"
-#include "pump_controller.h"
-#include "sensors/ph_sensor.h"
-#include "sensors/turbidity_sensor.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
 #include <stdio.h>
+#include "../hydrosense_utils.h"
+#include "../config/system_config.h"
+#include "pump_controller.h"
+#include "sensors/ph_sensor.h"
+#include "sensors/turbidity_sensor.h"
 
 extern SystemStatus_t g_system_status;
 extern SemaphoreHandle_t system_data_mutex;

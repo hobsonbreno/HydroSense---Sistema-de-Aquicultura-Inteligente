@@ -1,4 +1,7 @@
 #include "system_config.h"
+#include "hardware/i2c.h"
+#include "hardware/adc.h"
+#include "hardware/rtc.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include <stdio.h>
@@ -7,8 +10,8 @@
 extern SystemStatus_t g_system_status;
 extern SemaphoreHandle_t system_data_mutex;
 
-// Horários de alimentação: 8:00, 14:00, 20:00
-const uint16_t feeding_times[] = {800, 1400, 2000};
+// Horários de alimentação: 00:00, 08:00, 16:00 (de 8 em 8 horas)
+const uint16_t feeding_times[] = {0, 800, 1600}; // 00:00, 08:00, 16:00
 const uint8_t feeding_times_count = 3;
 
 void system_config_init(void) {

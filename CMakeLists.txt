@@ -1,3 +1,17 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.2.0)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.2.0)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
 cmake_minimum_required(VERSION 3.13)
 
 # Importa o Pico SDK
@@ -18,33 +32,31 @@ set(FREERTOS_PORT GCC_RP2040 CACHE STRING "")
 # Adiciona o FreeRTOS
 add_subdirectory(FreeRTOS-Kernel)
 
-# Adiciona o executável
-add_executable(HydroSense
-    src/main.c
-    src/sensors/temperature_sensor.c
-    src/sensors/water_level_sensor.c
-    src/sensors/ph_sensor.c
-    src/sensors/turbidity_sensor.c
-    src/actuators/pump_controller.c
-    src/actuators/servo_feeder.c
-    src/communication/mqtt_client.c
+# Arquivos fonte do projeto HydroSense completo
+set(SOURCES
+    src/hydrosense_main.c
+    src/hydrosense_servo.c
+    src/hydrosense_botoes.c
+    src/hydrosense_oled.c
+    src/hydrosense_utils.c
+    src/tasks/feeding_task.c
     src/tasks/monitoring_task.c
     src/tasks/automation_task.c
-    src/tasks/feeding_task.c
     src/config/system_config.c
-    arch/sys_arch.c
 )
+
+# Adiciona o executável
+add_executable(HydroSense ${SOURCES})
 
 # Inclui diretórios de header
 target_include_directories(HydroSense PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     include/
-    include/sensors/
     include/actuators/
-    include/communication/
-    include/utils/
-    include/tasks/
+    include/display/
+    include/sensors/
     include/config/
+    include/tasks/
     FreeRTOS-Kernel/include/
     FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/include/
 )
@@ -55,6 +67,8 @@ target_link_libraries(HydroSense
     hardware_pwm
     hardware_adc
     hardware_i2c
+    hardware_gpio
+    pico_multicore
     hardware_uart
     hardware_rtc
     hardware_timer

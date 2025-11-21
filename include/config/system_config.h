@@ -15,6 +15,9 @@
 #define PUMP2_PIN               14  // Bomba reabastecimento (PWM)
 #define SERVO_PIN               16  // Servo alimentador (PWM)
 
+// Configuração do botão B da BitDog Lab (alterado de A para B)
+#define BUTTON_B_PIN            6   // GPIO 6 para botão B da BitDog Lab
+
 // Parâmetros ideais da água
 #define TEMP_MIN_IDEAL          22.0f
 #define TEMP_MAX_IDEAL          28.0f
@@ -23,10 +26,13 @@
 #define TURBIDITY_MAX_ACCEPTABLE 10.0f
 #define WATER_LEVEL_MIN         20.0f
 
-// Intervalos das tarefas (ms)
+#ifndef MONITORING_INTERVAL
 #define MONITORING_INTERVAL     30000   // 30 segundos
-#define AUTOMATION_INTERVAL     10000   // 10 segundos
-#define FEEDING_CHECK_INTERVAL  60000   // 1 minuto
+#endif
+
+// Intervalos das tarefas (ms)
+// AUTOMATION_INTERVAL movido para automation_task.h para evitar conflito
+#define FEEDING_CHECK_INTERVAL  1000    // 1 segundo (para verificar horários precisos)
 
 // URLs e configurações MQTT
 #define MQTT_BROKER_URL         "broker.hivemq.com"
@@ -56,7 +62,7 @@ typedef struct {
 extern const uint16_t feeding_times[];
 extern const uint8_t feeding_times_count;
 
-// Funções de configuração
+// Declarações de funções
 void system_config_init(void);
 void get_system_status(SystemStatus_t *status);
 void set_system_status(const SystemStatus_t *status);
