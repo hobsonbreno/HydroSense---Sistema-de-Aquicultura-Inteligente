@@ -1,218 +1,171 @@
 #!/bin/bash
 
-# Script de Gravação do HydroSense v2.1
-echo "🐟 HydroSense v2.1 - Script de Gravação Automática"
-echo "=================================================="
+# Script para fazer flash do firmware HydroSense no Raspberry Pi Pico W
+# Uso: ./flash.sh [metodo]
+# Métodos disponíveis: picotool, usb, auto
 
-PROJECT_DIR="/home/hobson007breno/Downloads/projeto final/HydroSense"
-BUILD_DIR="$PROJECT_DIR/build"
-UF2_FILE="$BUILD_DIR/HydroSense.uf2"
+set -e
 
-# Função para mostrar ajuda
-show_help() {
-    echo "USO: $0 [opção]"
+PROJECT_NAME="HydroSense"
+BUILD_DIR="build"
+UF2_FILE="$BUILD_DIR/${PROJECT_NAME}.uf2"
+ELF_FILE="$BUILD_DIR/${PROJECT_NAME}.elf"
+
+# Cores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo -e "${BLUE}🚀 HydroSense Flash Tool${NC}"
+echo "================================="
+
+# Verifica se o arquivo UF2 existe
+if [ ! -f "$UF2_FILE" ]; then
+    echo -e "${RED}❌ Erro: Arquivo $UF2_FILE não encontrado!${NC}"
+    echo -e "${YELLOW}💡 Execute 'make' no diretório build primeiro.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Arquivo encontrado: $UF2_FILE${NC}"
+
+# Função para upload via USB (método padrão)
+flash_usb() {
+    echo -e "${BLUE}📱 Método: Upload via USB${NC}"
     echo ""
-    echo "OPÇÕES:"
-    echo "  auto       Gravação automática via montagem USB (padrão)"
-    echo "  picotool   Gravação via picotool (mais rápido)"
-    echo "  force      Força regravação mesmo se já conectado"
-    echo "  monitor    Grava e abre monitor serial"
-    echo "  help       Mostra esta ajuda"
+    echo -e "${YELLOW}📋 Instruções:${NC}"
+    echo "1. Segure o botão BOOTSEL no Pico W"
+    echo "2. Conecte o cabo USB (mantenha BOOTSEL pressionado)"
+    echo "3. Solte o botão BOOTSEL"
+    echo "4. O Pico W aparecerá como drive USB (RPI-RP2)"
     echo ""
-    echo "EXEMPLOS:"
-    echo "  $0            # Gravação automática"
-    echo "  $0 picotool   # Usa picotool"
-    echo "  $0 monitor    # Grava + monitor serial"
+    read -p "Pressione ENTER quando o Pico W estiver em modo bootloader..."
+    
+    # Procura pelo drive do Pico W
+    MOUNT_POINTS=$(find /media -name "RPI-RP2" -type d 2>/dev/null || true)
+    
+    if [ -z "$MOUNT_POINTS" ]; then
+        echo -e "${RED}❌ Drive RPI-RP2 não encontrado!${NC}"
+        echo -e "${YELLOW}💡 Verifique se o Pico W está em modo bootloader.${NC}"
+        exit 1
+    fi
+    
+    MOUNT_POINT=$(echo "$MOUNT_POINTS" | head -n1)
+    echo -e "${GREEN}📁 Drive encontrado: $MOUNT_POINT${NC}"
+    
+    echo -e "${BLUE}📤 Copiando firmware...${NC}"
+    cp "$UF2_FILE" "$MOUNT_POINT/"
+    
+    echo -e "${GREEN}✅ Upload concluído!${NC}"
+    echo -e "${BLUE}🔄 O Pico W reiniciará automaticamente.${NC}"
 }
 
-# Verifica argumentos
-METHOD="auto"
-OPEN_MONITOR=false
+# Função para upload via picotool
+flash_picotool() {
+    echo -e "${BLUE}🔧 Método: picotool${NC}"
+    
+    # Verifica se picotool está instalado
+    if ! command -v picotool &> /dev/null; then
+        echo -e "${RED}❌ picotool não encontrado!${NC}"
+        echo -e "${YELLOW}💡 Instale com: sudo apt install picotool${NC}"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}🔍 Procurando dispositivos...${NC}"
+    
+    # Verifica se o Pico W está conectado
+    if ! picotool info -a &> /dev/null; then
+        echo -e "${RED}❌ Pico W não encontrado!${NC}"
+        echo -e "${YELLOW}💡 Conecte o Pico W em modo bootloader (BOOTSEL).${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✅ Pico W detectado!${NC}"
+    
+    echo -e "${BLUE}📤 Fazendo upload via picotool...${NC}"
+    picotool load "$UF2_FILE"
+    
+    echo -e "${BLUE}🔄 Reiniciando dispositivo...${NC}"
+    picotool reboot
+    
+    echo -e "${GREEN}✅ Upload via picotool concluído!${NC}"
+}
 
-case "${1:-auto}" in
-    "help"|"-h"|"--help")
-        show_help
-        exit 0
-        ;;
+# Função para detecção automática
+flash_auto() {
+    echo -e "${BLUE}🤖 Método: Detecção automática${NC}"
+    
+    # Tenta picotool primeiro
+    if command -v picotool &> /dev/null && picotool info -a &> /dev/null; then
+        echo -e "${GREEN}🔍 Pico W detectado via picotool${NC}"
+        flash_picotool
+    else
+        echo -e "${YELLOW}⚠️  picotool não disponível, usando método USB${NC}"
+        flash_usb
+    fi
+}
+
+# Função para mostrar informações do firmware
+show_info() {
+    echo -e "${BLUE}ℹ️  Informações do Firmware${NC}"
+    echo "================================="
+    echo "Projeto: $PROJECT_NAME"
+    echo "Arquivo: $UF2_FILE"
+    
+    if [ -f "$ELF_FILE" ]; then
+        SIZE=$(stat -f%z "$ELF_FILE" 2>/dev/null || stat -c%s "$ELF_FILE" 2>/dev/null || echo "unknown")
+        echo "Tamanho: $SIZE bytes"
+    fi
+    
+    echo "Data: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+}
+
+# Parse dos argumentos
+METHOD="auto"
+if [ $# -gt 0 ]; then
+    METHOD="$1"
+fi
+
+case "$METHOD" in
     "picotool")
-        METHOD="picotool"
+        show_info
+        flash_picotool
         ;;
-    "force")
-        METHOD="force"
+    "usb")
+        show_info
+        flash_usb
         ;;
-    "monitor")
-        METHOD="auto"
-        OPEN_MONITOR=true
+    "auto")
+        show_info
+        flash_auto
         ;;
-    "auto"|"")
-        METHOD="auto"
+    "info")
+        show_info
+        ;;
+    "help"|"-h"|"--help")
+        echo "Uso: $0 [método]"
+        echo ""
+        echo "Métodos disponíveis:"
+        echo "  auto      - Detecção automática (padrão)"
+        echo "  picotool  - Upload via picotool"
+        echo "  usb       - Upload manual via USB"
+        echo "  info      - Mostrar informações do firmware"
+        echo "  help      - Mostrar esta ajuda"
+        echo ""
+        echo "Exemplos:"
+        echo "  $0              # Detecção automática"
+        echo "  $0 picotool     # Usar picotool"
+        echo "  $0 usb          # Método USB manual"
         ;;
     *)
-        echo "❌ Opção inválida: $1"
-        show_help
+        echo -e "${RED}❌ Método desconhecido: $METHOD${NC}"
+        echo -e "${YELLOW}💡 Use '$0 help' para ver os métodos disponíveis.${NC}"
         exit 1
         ;;
 esac
 
-# Verifica se o arquivo .uf2 existe
-if [ ! -f "$UF2_FILE" ]; then
-    echo "❌ Arquivo HydroSense.uf2 não encontrado!"
-    echo "   Compilando automaticamente..."
-    echo ""
-    
-    cd "$PROJECT_DIR"
-    if ./compile.sh; then
-        echo "✅ Compilação concluída!"
-    else
-        echo "❌ Erro na compilação!"
-        exit 1
-    fi
-fi
-
-echo "📁 Arquivo: $UF2_FILE"
-echo "📊 Tamanho: $(ls -lh "$UF2_FILE" | awk '{print $5}')"
-echo "🔧 Método: $METHOD"
 echo ""
-
-# Método via picotool (mais rápido e confiável)
-if [ "$METHOD" = "picotool" ]; then
-    echo "🛠️  Usando picotool para gravação..."
-    echo ""
-    echo "🔌 INSTRUÇÕES:"
-    echo "1. Segure BOOTSEL e conecte o Pico W via USB"
-    echo "2. Solte BOOTSEL e pressione ENTER"
-    echo ""
-    read -p "Pressione ENTER quando o Pico estiver conectado em modo bootloader..."
-    
-    # Verifica se picotool está disponível
-    if command -v picotool >/dev/null 2>&1; then
-        echo "📤 Gravando com picotool..."
-        if picotool load "$UF2_FILE" -fx; then
-            echo "🎉 GRAVAÇÃO CONCLUÍDA COM PICOTOOL!"
-        else
-            echo "❌ Erro ao gravar com picotool"
-            exit 1
-        fi
-    else
-        echo "❌ picotool não encontrado! Instalando..."
-        echo "   sudo apt install picotool"
-        echo "   Ou baixe de: https://github.com/raspberrypi/picotool"
-        exit 1
-    fi
-else
-    # Método tradicional via montagem USB
-    echo "🔌 INSTRUÇÕES:"
-    echo "1. Desligue o Raspberry Pi Pico W"
-    echo "2. Segure o botão BOOTSEL na placa"
-    echo "3. Conecte via USB mantendo BOOTSEL pressionado"
-    echo "4. Solte o BOOTSEL após conectar"
-    echo ""
-    echo "🔍 Aguardando a unidade RPI-RP2 aparecer..."
-
-    # Loop para aguardar a unidade aparecer
-    TIMEOUT=45
-    COUNT=0
-    while [ $COUNT -lt $TIMEOUT ]; do
-        # Verifica possíveis locais onde a unidade pode aparecer
-        RPI_PATH=""
-        
-        # Busca mais abrangente
-        for path in "/media/$USER/RPI-RP2" "/media/RPI-RP2" "/mnt/RPI-RP2" "/run/media/$USER/RPI-RP2"; do
-            if [ -d "$path" ]; then
-                RPI_PATH="$path"
-                break
-            fi
-        done
-        
-        # Busca dinâmica em /media e /mnt
-        if [ -z "$RPI_PATH" ]; then
-            RPI_PATH=$(find /media /mnt -name "RPI-RP2" -type d 2>/dev/null | head -1)
-        fi
-        
-        if [ -n "$RPI_PATH" ]; then
-            echo "✅ Unidade RPI-RP2 encontrada em: $RPI_PATH"
-            echo ""
-            echo "📤 Copiando firmware HydroSense..."
-            
-            if cp "$UF2_FILE" "$RPI_PATH/"; then
-                echo "🎉 GRAVAÇÃO CONCLUÍDA COM SUCESSO!"
-                break
-            else
-                echo "❌ Erro ao copiar arquivo para a placa!"
-                exit 1
-            fi
-        fi
-        
-        if [ $((COUNT % 5)) -eq 0 ]; then
-            echo "   Aguardando... (${COUNT}s/${TIMEOUT}s)"
-        fi
-        sleep 1
-        COUNT=$((COUNT + 1))
-    done
-
-    if [ $COUNT -ge $TIMEOUT ]; then
-        echo ""
-        echo "⏰ Timeout: Unidade RPI-RP2 não foi encontrada em ${TIMEOUT}s"
-        echo ""
-        echo "🔧 SOLUÇÕES:"
-        echo "1. Tente o método picotool: $0 picotool"
-        echo "2. Verifique se a placa está em modo bootloader"
-        echo "3. Use gravação manual via gerenciador de arquivos"
-        exit 1
-    fi
-fi
-
-echo ""
-echo "🐟 HydroSense v2.1 gravado com sucesso!"
-echo ""
-echo "🔌 CONEXÕES IMPORTANTES:"
-echo "   Servo SG90:"
-echo "   ├── VCC (Vermelho) → 5V externo (importante!)"
-echo "   ├── GND (Marrom/Preto) → GND comum"
-echo "   └── Signal (Laranja) → GPIO 16"
-echo ""
-echo "   Display OLED I2C:"
-echo "   ├── VCC → 3.3V"
-echo "   ├── GND → GND"
-echo "   ├── SDA → GPIO 8"
-echo "   └── SCL → GPIO 9"
-echo ""
-echo "   Botões:"
-echo "   ├── Botão A → GPIO 5 (pull-up interno)"
-echo "   └── Botão B → GPIO 6 (pull-up interno)"
-echo ""
-echo "🔄 A placa reiniciará automaticamente em ~3 segundos"
-echo "📊 Para monitorar: Serial Monitor 115200 baud"
-
-# Abre monitor serial se solicitado
-if [ "$OPEN_MONITOR" = true ]; then
-    echo ""
-    echo "🖥️  Aguardando reinicialização para abrir monitor serial..."
-    sleep 5
-    
-    # Procura por dispositivos serial
-    SERIAL_PORT=""
-    for port in /dev/ttyACM* /dev/ttyUSB*; do
-        if [ -e "$port" ]; then
-            SERIAL_PORT="$port"
-            break
-        fi
-    done
-    
-    if [ -n "$SERIAL_PORT" ]; then
-        echo "🔗 Conectando ao monitor serial: $SERIAL_PORT"
-        if command -v minicom >/dev/null 2>&1; then
-            minicom -D "$SERIAL_PORT" -b 115200
-        elif command -v screen >/dev/null 2>&1; then
-            screen "$SERIAL_PORT" 115200
-        else
-            echo "📝 Instale minicom ou screen para monitor serial:"
-            echo "   sudo apt install minicom screen"
-        fi
-    else
-        echo "⚠️  Porta serial não encontrada. Reconecte a placa sem BOOTSEL."
-    fi
-fi
-
-echo ""
-echo "✅ HydroSense operacional! Sistema de aquicultura ativo."
+echo -e "${GREEN}🎉 Flash concluído com sucesso!${NC}"
+echo -e "${BLUE}📟 Verifique a saída serial para logs do HydroSense.${NC}"

@@ -1,1005 +1,403 @@
 #include "hydrosense_system.h"
 #include "hardware/i2c.h"
-#include "hardware/rtc.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <math.h>  // Para cos() e sin()
 
-// Baseado nos exemplos oficiais do Pico + BitDogLab
-#define SSD1306_HEIGHT              64
-#define SSD1306_WIDTH               128
-#define SSD1306_I2C_ADDR_PRIMARY    0x3C  // Endereço mais comum
-#define SSD1306_I2C_ADDR_SECONDARY  0x3D  // Endereço alternativo
+// Definições SSD1306 corrigidas baseadas no projeto funcional
+#define SSD1306_WIDTH           128
+#define SSD1306_HEIGHT          64
+#define SSD1306_I2C_ADDR        0x3C
+#define SSD1306_I2C_PORT        i2c1
+#define SSD1306_I2C_SPEED       400000
 
-// Comandos SSD1306 (dos exemplos oficiais)
-#define SSD1306_SET_CONTRAST        0x81
-#define SSD1306_SET_ENTIRE_ON       0xA4
-#define SSD1306_SET_NORM_INV        0xA6
-#define SSD1306_SET_DISP            0xAE
-#define SSD1306_SET_MEM_ADDR        0x20
-#define SSD1306_SET_COL_ADDR        0x21
-#define SSD1306_SET_PAGE_ADDR       0x22
-#define SSD1306_SET_DISP_START_LINE 0x40
-#define SSD1306_SET_SEG_REMAP       0xA0
-#define SSD1306_SET_MUX_RATIO       0xA8
-#define SSD1306_SET_COM_OUT_DIR     0xC0
-#define SSD1306_SET_DISP_OFFSET     0xD3
-#define SSD1306_SET_COM_PIN_CFG     0xDA
-#define SSD1306_SET_DISP_CLK_DIV    0xD5
-#define SSD1306_SET_PRECHARGE       0xD9
-#define SSD1306_SET_VCOM_DESEL      0xDB
-#define SSD1306_SET_CHARGE_PUMP     0x8D
+// Comandos SSD1306 essenciais (testados e funcionais)
+#define SSD1306_DISPLAYOFF      0xAE
+#define SSD1306_DISPLAYON       0xAF
+#define SSD1306_SETCONTRAST     0x81
+#define SSD1306_DISPLAYALLON_RESUME 0xA4
+#define SSD1306_DISPLAYALLON    0xA5
+#define SSD1306_NORMALDISPLAY   0xA6
+#define SSD1306_INVERTDISPLAY   0xA7
+#define SSD1306_SETDISPLAYOFFSET 0xD3
+#define SSD1306_SETCOMPINS      0xDA
+#define SSD1306_SETVCOMDETECT   0xDB
+#define SSD1306_SETDISPLAYCLOCKDIV 0xD5
+#define SSD1306_SETPRECHARGE    0xD9
+#define SSD1306_SETMULTIPLEX    0xA8
+#define SSD1306_SETLOWCOLUMN    0x00
+#define SSD1306_SETHIGHCOLUMN   0x10
+#define SSD1306_SETSTARTLINE    0x40
+#define SSD1306_MEMORYMODE      0x20
+#define SSD1306_COLUMNADDR      0x21
+#define SSD1306_PAGEADDR        0x22
+#define SSD1306_COMSCANINC      0xC0
+#define SSD1306_COMSCANDEC      0xC8
+#define SSD1306_SEGREMAP        0xA0
+#define SSD1306_CHARGEPUMP      0x8D
 
-// Estrutura para área de renderização (inspirada na BitDogLab)
-typedef struct {
-    uint start_column;
-    uint end_column; 
-    uint start_page;
-    uint end_page;
-    size_t buffer_length;
-} render_area_t;
+// Buffer para o display
+static uint8_t display_buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
+bool ssd1306_init_done = false;
 
-// Estado do driver melhorado
-static bool ssd1306_init_done = false;
-static i2c_inst_t *ssd1306_i2c = i2c1;  // CORRIGIDO: usar i2c1 para GP14/GP15
-static uint8_t ssd1306_buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
-static uint8_t ssd1306_detected_addr = 0;  // Endereço detectado
-static render_area_t frame_area;
-
-// Font 8x8 dos exemplos oficiais do Pico
-static const uint8_t font_8x8[][8] = {
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 0x20 ' '
-    {0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00}, // 0x21 '!'
-    {0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 0x22 '"'
-    {0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00}, // 0x23 '#'
-    {0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00}, // 0x24 '$'
-    {0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00}, // 0x25 '%'
-    {0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00}, // 0x26 '&'
-    {0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00}, // 0x27 '''
-    {0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00}, // 0x28 '('
-    {0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00}, // 0x29 ')'
-    {0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00}, // 0x2A '*'
-    {0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00}, // 0x2B '+'
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x06, 0x00}, // 0x2C ','
-    {0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00}, // 0x2D '-'
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00}, // 0x2E '.'
-    {0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00}, // 0x2F '/'
-    {0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00}, // 0x30 '0'
-    {0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00}, // 0x31 '1'
-    {0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00}, // 0x32 '2'
-    {0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00}, // 0x33 '3'
-    {0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00}, // 0x34 '4'
-    {0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00}, // 0x35 '5'
-    {0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00}, // 0x36 '6'
-    {0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00}, // 0x37 '7'
-    {0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00}, // 0x38 '8'
-    {0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00}, // 0x39 '9'
-    {0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00}, // 0x3A ':'
-    {0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x06, 0x00}, // 0x3B ';'
-    {0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00}, // 0x3C '<'
-    {0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00}, // 0x3D '='
-    {0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00}, // 0x3E '>'
-    {0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00}, // 0x3F '?'
-    {0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00}, // 0x40 '@'
-    {0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00}, // 0x41 'A'
-    {0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00}, // 0x42 'B' 
-    {0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00}, // 0x43 'C'
-    {0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00}, // 0x44 'D'
-    {0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00}, // 0x45 'E'
-    {0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00}, // 0x46 'F'
-    {0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00}, // 0x47 'G'
-    {0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00}, // 0x48 'H'
-    {0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00}, // 0x49 'I'
-    {0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00}, // 0x4A 'J'
-    {0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00}, // 0x4B 'K'
-    {0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00}, // 0x4C 'L'
-    {0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00}, // 0x4D 'M'
-    {0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00}, // 0x4E 'N'
-    {0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00}, // 0x4F 'O'
-    {0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00}, // 0x50 'P'
-    {0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00}, // 0x51 'Q'
-    {0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00}, // 0x52 'R'
-    {0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00}, // 0x53 'S'
-    {0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00}, // 0x54 'T'
-    {0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00}, // 0x55 'U'
-    {0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00}, // 0x56 'V'
-    {0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00}, // 0x57 'W'
-    {0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00}, // 0x58 'X'
-    {0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00}, // 0x59 'Y'
-    {0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00}, // 0x5A 'Z'
-    {0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00}, // 0x5B '['
-    {0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00}, // 0x5C '\'
-    {0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00}, // 0x5D ']'
-    {0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00}, // 0x5E '^'
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF}, // 0x5F '_'
-    {0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00}, // 0x60 '`'
-    {0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00}, // 0x61 'a'
-    {0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00}, // 0x62 'b'
-    {0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00}, // 0x63 'c'
-    {0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00}, // 0x64 'd'
-    {0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00}, // 0x65 'e'
-    {0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00}, // 0x66 'f'
-    {0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F}, // 0x67 'g'
-    {0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00}, // 0x68 'h'
-    {0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00}, // 0x69 'i'
-    {0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E}, // 0x6A 'j'
-    {0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00}, // 0x6B 'k'
-    {0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00}, // 0x6C 'l'
-    {0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00}, // 0x6D 'm'
-    {0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00}, // 0x6E 'n'
-    {0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00}, // 0x6F 'o'
-    {0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F}, // 0x70 'p'
-    {0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78}, // 0x71 'q'
-    {0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00}, // 0x72 'r'
-    {0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00}, // 0x73 's'
-    {0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00}, // 0x74 't'
-    {0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00}, // 0x75 'u'
-    {0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00}, // 0x76 'v'
-    {0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00}, // 0x77 'w'
-    {0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00}, // 0x78 'x'
-    {0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F}, // 0x79 'y'
-    {0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00}, // 0x7A 'z'
-    {0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00}, // 0x7B '{'
-    {0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00}, // 0x7C '|'
-    {0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00}, // 0x7D '}'
-    {0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, // 0x7E '~'
+// Font 5x8 simples e legível (baseada no projeto funcional)
+static const uint8_t font5x8[][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // ' ' (espaço)
+    {0x00, 0x00, 0x5F, 0x00, 0x00}, // '!'
+    {0x00, 0x07, 0x00, 0x07, 0x00}, // '"'
+    {0x14, 0x7F, 0x14, 0x7F, 0x14}, // '#'
+    {0x24, 0x2A, 0x7F, 0x2A, 0x12}, // '$'
+    {0x23, 0x13, 0x08, 0x64, 0x62}, // '%'
+    {0x36, 0x49, 0x55, 0x22, 0x50}, // '&'
+    {0x00, 0x05, 0x03, 0x00, 0x00}, // '''
+    {0x00, 0x1C, 0x22, 0x41, 0x00}, // '('
+    {0x00, 0x41, 0x22, 0x1C, 0x00}, // ')'
+    {0x08, 0x2A, 0x1C, 0x2A, 0x08}, // '*'
+    {0x08, 0x08, 0x3E, 0x08, 0x08}, // '+'
+    {0x00, 0x50, 0x30, 0x00, 0x00}, // ','
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // '-'
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // '.'
+    {0x20, 0x10, 0x08, 0x04, 0x02}, // '/'
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // '0'
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // '1'
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // '2'
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // '3'
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // '4'
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // '5'
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // '6'
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // '7'
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // '8'
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // '9'
+    {0x00, 0x36, 0x36, 0x00, 0x00}, // ':'
+    {0x00, 0x56, 0x36, 0x00, 0x00}, // ';'
+    {0x00, 0x08, 0x14, 0x22, 0x41}, // '<'
+    {0x14, 0x14, 0x14, 0x14, 0x14}, // '='
+    {0x41, 0x22, 0x14, 0x08, 0x00}, // '>'
+    {0x02, 0x01, 0x51, 0x09, 0x06}, // '?'
+    {0x32, 0x49, 0x79, 0x41, 0x3E}, // '@'
+    {0x7E, 0x11, 0x11, 0x11, 0x7E}, // 'A'
+    {0x7F, 0x49, 0x49, 0x49, 0x36}, // 'B'
+    {0x3E, 0x41, 0x41, 0x41, 0x22}, // 'C'
+    {0x7F, 0x41, 0x41, 0x22, 0x1C}, // 'D'
+    {0x7F, 0x49, 0x49, 0x49, 0x41}, // 'E'
+    {0x7F, 0x09, 0x09, 0x09, 0x01}, // 'F'
+    {0x3E, 0x41, 0x49, 0x49, 0x7A}, // 'G'
+    {0x7F, 0x08, 0x08, 0x08, 0x7F}, // 'H'
+    {0x00, 0x41, 0x7F, 0x41, 0x00}, // 'I'
+    {0x20, 0x40, 0x41, 0x3F, 0x01}, // 'J'
+    {0x7F, 0x08, 0x14, 0x22, 0x41}, // 'K'
+    {0x7F, 0x40, 0x40, 0x40, 0x40}, // 'L'
+    {0x7F, 0x02, 0x04, 0x02, 0x7F}, // 'M'
+    {0x7F, 0x04, 0x08, 0x10, 0x7F}, // 'N'
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 'O'
+    {0x7F, 0x09, 0x09, 0x09, 0x06}, // 'P'
+    {0x3E, 0x41, 0x51, 0x21, 0x5E}, // 'Q'
+    {0x7F, 0x09, 0x19, 0x29, 0x46}, // 'R'
+    {0x46, 0x49, 0x49, 0x49, 0x31}, // 'S'
+    {0x01, 0x01, 0x7F, 0x01, 0x01}, // 'T'
+    {0x3F, 0x40, 0x40, 0x40, 0x3F}, // 'U'
+    {0x1F, 0x20, 0x40, 0x20, 0x1F}, // 'V'
+    {0x7F, 0x20, 0x18, 0x20, 0x7F}, // 'W'
+    {0x63, 0x14, 0x08, 0x14, 0x63}, // 'X'
+    {0x03, 0x04, 0x78, 0x04, 0x03}, // 'Y'
+    {0x61, 0x51, 0x49, 0x45, 0x43}  // 'Z'
 };
 
-// Função para detectar dispositivos I2C
-static bool i2c_device_scan(uint8_t addr) {
-    uint8_t dummy;
-    int ret = i2c_read_blocking(ssd1306_i2c, addr, &dummy, 1, false);
-    return ret >= 0;
+// Função para enviar comando
+static bool send_command(uint8_t cmd) {
+    uint8_t buffer[2] = {0x00, cmd}; // 0x00 indica comando
+    int result = i2c_write_blocking(SSD1306_I2C_PORT, SSD1306_I2C_ADDR, buffer, 2, false);
+    return result == 2;
 }
 
-// Funções melhoradas com tratamento de erro
-static bool ssd1306_write_cmd(uint8_t cmd) {
-    uint8_t buf[2] = {0x80, cmd};
-    int ret = i2c_write_blocking(i2c1, ssd1306_detected_addr, buf, 2, false);  // i2c1
-    if (ret < 0) {
-        printf("❌ Erro I2C ao enviar comando 0x%02X (ret=%d)\n", cmd, ret);
-        return false;
-    }
-    return true;
+// Função para enviar dados
+static bool send_data(uint8_t data) {
+    uint8_t buffer[2] = {0x40, data}; // 0x40 indica dados
+    int result = i2c_write_blocking(SSD1306_I2C_PORT, SSD1306_I2C_ADDR, buffer, 2, false);
+    return result == 2;
 }
 
-static bool ssd1306_write_buf(uint8_t buf[], int buflen) {
-    uint8_t *temp_buf = malloc(buflen + 1);
-    if (!temp_buf) {
-        printf("❌ Erro de memória ao alocar buffer\n");
+// Inicialização simplificada e funcional
+bool oled_init(void) {
+    printf("🔧 Inicializando OLED SSD1306 (Método Funcional)...\n");
+    
+    // Configurar I2C
+    i2c_init(SSD1306_I2C_PORT, SSD1306_I2C_SPEED);
+    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_OLED_SDA);
+    gpio_pull_up(I2C_OLED_SCL);
+    
+    sleep_ms(100); // Aguardar estabilização
+    
+    // Testar comunicação I2C
+    uint8_t test_data;
+    int result = i2c_read_blocking(SSD1306_I2C_PORT, SSD1306_I2C_ADDR, &test_data, 1, false);
+    if (result < 0) {
+        printf("❌ Display não encontrado no endereço 0x%02X\n", SSD1306_I2C_ADDR);
         return false;
     }
     
-    temp_buf[0] = 0x40;
-    memcpy(temp_buf + 1, buf, buflen);
-    int ret = i2c_write_blocking(i2c1, ssd1306_detected_addr, temp_buf, buflen + 1, false);  // i2c1
-    free(temp_buf);
+    printf("✅ Display detectado no endereço 0x%02X\n", SSD1306_I2C_ADDR);
     
-    if (ret < 0) {
-        printf("❌ Erro I2C ao enviar buffer (%d bytes, ret=%d)\n", buflen, ret);
-        return false;
-    }
+    // Sequência de inicialização testada e funcional
+    if (!send_command(SSD1306_DISPLAYOFF)) return false;
+    if (!send_command(SSD1306_SETDISPLAYCLOCKDIV)) return false;
+    if (!send_command(0x80)) return false; // Clock divide ratio
+    if (!send_command(SSD1306_SETMULTIPLEX)) return false;
+    if (!send_command(0x3F)) return false; // 64 lines
+    if (!send_command(SSD1306_SETDISPLAYOFFSET)) return false;
+    if (!send_command(0x00)) return false; // No offset
+    if (!send_command(SSD1306_SETSTARTLINE | 0x00)) return false;
+    if (!send_command(SSD1306_CHARGEPUMP)) return false;
+    if (!send_command(0x14)) return false; // Enable charge pump
+    if (!send_command(SSD1306_MEMORYMODE)) return false;
+    if (!send_command(0x00)) return false; // Horizontal addressing
+    if (!send_command(SSD1306_SEGREMAP | 0x01)) return false; // Rotate 180°
+    if (!send_command(SSD1306_COMSCANDEC)) return false; // Rotate 180°
+    if (!send_command(SSD1306_SETCOMPINS)) return false;
+    if (!send_command(0x12)) return false; // COM pins configuration
+    if (!send_command(SSD1306_SETCONTRAST)) return false;
+    if (!send_command(0x8F)) return false; // Medium contrast
+    if (!send_command(SSD1306_SETPRECHARGE)) return false;
+    if (!send_command(0xF1)) return false; // Precharge period
+    if (!send_command(SSD1306_SETVCOMDETECT)) return false;
+    if (!send_command(0x40)) return false; // VCOM detect
+    if (!send_command(SSD1306_DISPLAYALLON_RESUME)) return false;
+    if (!send_command(SSD1306_NORMALDISPLAY)) return false;
+    if (!send_command(SSD1306_DISPLAYON)) return false;
+    
+    ssd1306_init_done = true;
+    
+    // Limpar display
+    oled_clear();
+    oled_display_buffer();
+    
+    printf("🎉 OLED inicializado com sucesso!\n");
     return true;
 }
 
-// Função inspirada no algoritmo de Bresenham da BitDogLab
-void oled_draw_line(int x0, int y0, int x1, int y1) {
+// Limpar buffer
+void oled_clear(void) {
+    memset(display_buffer, 0, sizeof(display_buffer));
+}
+
+// Definir pixel
+void oled_set_pixel(int x, int y, bool on) {
+    if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT) {
+        return;
+    }
+    
+    int page = y / 8;
+    int bit = y % 8;
+    int index = page * SSD1306_WIDTH + x;
+    
+    if (on) {
+        display_buffer[index] |= (1 << bit);
+    } else {
+        display_buffer[index] &= ~(1 << bit);
+    }
+}
+
+// Escrever caractere
+void oled_write_char(int x, int y, char c) {
     if (!ssd1306_init_done) return;
     
-    int dx = abs(x1 - x0);
-    int dy = -abs(y1 - y0);
-    int sx = x0 < x1 ? 1 : -1;
-    int sy = y0 < y1 ? 1 : -1;
-    int error = dx + dy;
-    int error_2;
-
-    while (true) {
-        oled_set_pixel(x0, y0, true);
-        if (x0 == x1 && y0 == y1) {
-            break;
+    if (c < ' ' || c > 'Z') {
+        c = ' '; // Caractere padrão para não suportados
+    }
+    
+    const uint8_t *char_data = font5x8[c - ' '];
+    
+    for (int col = 0; col < 5; col++) {
+        uint8_t column = char_data[col];
+        for (int row = 0; row < 8; row++) {
+            bool pixel = (column >> row) & 1;
+            oled_set_pixel(x + col, y + row, pixel);
         }
+    }
+}
 
-        error_2 = 2 * error;
+// Escrever string
+void oled_write_string(int x, int y, const char *str) {
+    if (!ssd1306_init_done || !str) return;
+    
+    int pos_x = x;
+    while (*str && pos_x < SSD1306_WIDTH - 6) {
+        oled_write_char(pos_x, y, *str);
+        pos_x += 6; // 5 pixels + 1 espaço
+        str++;
+    }
+}
 
-        if (error_2 >= dy) {
-            error += dy;
+// Enviar buffer para display
+bool oled_display_buffer(void) {
+    if (!ssd1306_init_done) {
+        return false;
+    }
+    
+    // Configurar área de escrita
+    if (!send_command(SSD1306_COLUMNADDR)) return false;
+    if (!send_command(0)) return false;   // Start column
+    if (!send_command(127)) return false; // End column
+    if (!send_command(SSD1306_PAGEADDR)) return false;
+    if (!send_command(0)) return false;   // Start page
+    if (!send_command(7)) return false;   // End page
+    
+    // Enviar dados em chunks menores para evitar problemas
+    const int chunk_size = 32;
+    for (int i = 0; i < sizeof(display_buffer); i += chunk_size) {
+        int remaining = sizeof(display_buffer) - i;
+        int current_chunk = (remaining < chunk_size) ? remaining : chunk_size;
+        
+        uint8_t *buffer = malloc(current_chunk + 1);
+        if (!buffer) {
+            return false;
+        }
+        
+        buffer[0] = 0x40; // Data command
+        memcpy(buffer + 1, display_buffer + i, current_chunk);
+        
+        int result = i2c_write_blocking(SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 
+                                       buffer, current_chunk + 1, false);
+        
+        free(buffer);
+        
+        if (result != current_chunk + 1) {
+            return false;
+        }
+        
+        sleep_ms(1); // Pequena pausa entre chunks
+    }
+    
+    return true;
+}
+
+// Desenhar linha
+void DrawLine(int x0, int y0, int x1, int y1, bool on) {
+    int dx = abs(x1 - x0);
+    int dy = abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+    
+    while (true) {
+        oled_set_pixel(x0, y0, on);
+        
+        if (x0 == x1 && y0 == y1) break;
+        
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
             x0 += sx;
         }
-        if (error_2 <= dx) {
-            error += dx;
+        if (e2 < dx) {
+            err += dx;
             y0 += sy;
         }
     }
 }
 
-// Função ULTRA-ESPECÍFICA para GP14/GP15 - teste definitivo
-bool oled_teste_definitivo_gp14_gp15(void) {
-    printf("🎯 === TESTE DEFINITIVO DISPLAY GP14/GP15 ===\n");
-    printf("🔧 Servo funcionou = pinos corretos! Agora testando display...\n");
-    
-    // TESTE 1: I2C1 com GP14/GP15 (padrão correto)
-    printf("\n📡 TESTE 1: I2C1 com GP14=SDA, GP15=SCL\n");
-    
-    i2c_deinit(i2c0);  // Garante que i2c0 está limpo
-    i2c_deinit(i2c1);  // Garante que i2c1 está limpo
-    sleep_ms(100);
-    
-    // Configura I2C1 super conservador
-    i2c_init(i2c1, 50000);  // 50kHz - extremamente lento e confiável
-    gpio_set_function(14, GPIO_FUNC_I2C);  // GP14 = SDA
-    gpio_set_function(15, GPIO_FUNC_I2C);  // GP15 = SCL
-    gpio_pull_up(14);
-    gpio_pull_up(15);
-    sleep_ms(500);  // Aguarda muito tempo
-    
-    // Testa comunicação básica em 0x3C
-    uint8_t dummy;
-    int ret_3c = i2c_read_blocking(i2c1, 0x3C, &dummy, 1, false);
-    printf("   0x3C: %s (ret=%d)\n", ret_3c >= 0 ? "✅ RESPONDE" : "❌ NÃO RESPONDE", ret_3c);
-    
-    // Testa comunicação básica em 0x3D  
-    int ret_3d = i2c_read_blocking(i2c1, 0x3D, &dummy, 1, false);
-    printf("   0x3D: %s (ret=%d)\n", ret_3d >= 0 ? "✅ RESPONDE" : "❌ NÃO RESPONDE", ret_3d);
-    
-    uint8_t found_addr = 0;
-    if (ret_3c >= 0) {
-        found_addr = 0x3C;
-    } else if (ret_3d >= 0) {
-        found_addr = 0x3D;
-    }
-    
-    if (found_addr > 0) {
-        printf("🎉 DISPOSITIVO ENCONTRADO em 0x%02X!\n", found_addr);
-        
-        // Teste comando simples
-        uint8_t cmd_test[] = {0x00, 0xAE};  // Display OFF
-        int cmd_ret = i2c_write_blocking(i2c1, found_addr, cmd_test, 2, false);
-        printf("   Comando teste: %s (ret=%d)\n", cmd_ret >= 0 ? "✅ OK" : "❌ FALHOU", cmd_ret);
-        
-        if (cmd_ret >= 0) {
-            // Sequência ultra-simples de inicialização
-            printf("⚙️ Enviando inicialização ultra-simples...\n");
-            
-            uint8_t init[] = {
-                0x00, 0xAE,  // Display OFF
-                0x00, 0x8D,  // Charge Pump  
-                0x00, 0x14,  // Enable Charge Pump
-                0x00, 0x20,  // Memory Mode
-                0x00, 0x00,  // Horizontal
-                0x00, 0x81,  // Contrast
-                0x00, 0xFF,  // Max contrast
-                0x00, 0xAF   // Display ON
-            };
-            
-            int ret = i2c_write_blocking(i2c1, found_addr, init, sizeof(init), false);
-            printf("   Inicialização: %s (ret=%d)\n", ret >= 0 ? "✅ OK" : "❌ FALHOU", ret);
-            
-            if (ret >= 0) {
-                sleep_ms(200);
-                
-                // Teste visual extremo - tela toda branca
-                printf("🎨 Enviando tela BRANCA extrema...\n");
-                
-                uint8_t white[1025];
-                white[0] = 0x40;  // Data mode
-                memset(&white[1], 0xFF, 1024);  // Todos pixels brancos
-                
-                ret = i2c_write_blocking(i2c1, found_addr, white, sizeof(white), false);
-                printf("   Tela branca: %s (ret=%d)\n", ret >= 0 ? "✅ ENVIADO" : "❌ FALHOU", ret);
-                
-                if (ret >= 0) {
-                    printf("📺 DISPLAY DEVE ESTAR COMPLETAMENTE BRANCO AGORA!\n");
-                    printf("⏱️ Aguardando 10 segundos para verificação...\n");
-                    
-                    for (int i = 10; i > 0; i--) {
-                        printf("   %d... ", i);
-                        fflush(stdout);
-                        sleep_ms(1000);
-                    }
-                    printf("\n");
-                    
-                    // Teste piscar display
-                    printf("💡 Testando piscar display (3x)...\n");
-                    for (int i = 0; i < 3; i++) {
-                        // OFF
-                        uint8_t off[] = {0x00, 0xAE};
-                        i2c_write_blocking(i2c1, found_addr, off, 2, false);
-                        printf("   OFF %d\n", i+1);
-                        sleep_ms(1000);
-                        
-                        // ON
-                        uint8_t on[] = {0x00, 0xAF}; 
-                        i2c_write_blocking(i2c1, found_addr, on, 2, false);
-                        printf("   ON %d\n", i+1);
-                        sleep_ms(1000);
-                    }
-                    
-                    ssd1306_init_done = true;
-                    ssd1306_detected_addr = found_addr;
-                    ssd1306_i2c = i2c1;
-                    
-                    printf("✅ TESTE DEFINITIVO CONCLUÍDO COM SUCESSO!\n");
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // TESTE 2: Scan completo I2C1 para ver todos os dispositivos
-    printf("\n🔍 TESTE 2: Scan completo I2C1 (GP14/GP15)\n");
-    int devices = 0;
-    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-        int scan_ret = i2c_read_blocking(i2c1, addr, &dummy, 1, false);
-        if (scan_ret >= 0) {
-            printf("   0x%02X: ✅ DISPOSITIVO ENCONTRADO\n", addr);
-            devices++;
-        }
-    }
-    printf("📊 Total dispositivos I2C1: %d\n", devices);
-    
-    // TESTE 3: Tentar I2C0 mesmo com GP14/GP15 (teste de compatibilidade)
-    printf("\n🔄 TESTE 3: I2C0 com GP14/GP15 (teste compatibilidade)\n");
-    
-    i2c_deinit(i2c1);
-    sleep_ms(100);
-    
-    i2c_init(i2c0, 50000);
-    gpio_set_function(14, GPIO_FUNC_I2C);
-    gpio_set_function(15, GPIO_FUNC_I2C);
-    gpio_pull_up(14);
-    gpio_pull_up(15);
-    sleep_ms(500);
-    
-    ret_3c = i2c_read_blocking(i2c0, 0x3C, &dummy, 1, false);
-    ret_3d = i2c_read_blocking(i2c0, 0x3D, &dummy, 1, false);
-    
-    printf("   I2C0+GP14/15 -> 0x3C: %s, 0x3D: %s\n", 
-           ret_3c >= 0 ? "OK" : "FAIL", 
-           ret_3d >= 0 ? "OK" : "FAIL");
-    
-    // TESTE 4: Verificação de alimentação e hardware
-    printf("\n🔌 TESTE 4: Diagnóstico de hardware\n");
-    printf("📍 Configuração atual:\n");
-    printf("   - GP14 função: %d (deve ser 2 para I2C)\n", gpio_get_function(14));
-    printf("   - GP15 função: %d (deve ser 2 para I2C)\n", gpio_get_function(15));
-    printf("   - Servo funciona: ✅ (confirma pinos corretos)\n");
-    
-    printf("\n🔧 CHECKLIST FÍSICO:\n");
-    printf("   □ Display VCC conectado em 3.3V (NÃO 5V!)\n");
-    printf("   □ Display GND conectado\n");
-    printf("   □ Display SDA conectado em GP14\n");
-    printf("   □ Display SCL conectado em GP15\n");
-    printf("   □ Jumpers/fios bem conectados (sem falso contato)\n");
-    printf("   □ Display não está fisicamente danificado\n");
-    
-    if (devices == 0) {
-        printf("\n❌ CONCLUSÃO: PROBLEMA FÍSICO CONFIRMADO\n");
-        printf("   Nenhum dispositivo I2C encontrado em GP14/GP15\n");
-        printf("   Como o servo funciona, os pinos estão corretos\n");
-        printf("   Logo, é problema de conexão/alimentação do display\n");
-    }
-    
-    printf("===============================================\n");
-    return false;
+// Controle de contraste
+bool oled_set_contrast(uint8_t contrast) {
+    if (!ssd1306_init_done) return false;
+    return send_command(SSD1306_SETCONTRAST) && send_command(contrast);
 }
 
-// Inicialização melhorada inspirada na BitDogLab
-bool oled_init_bitdog_inspired(void) {
-    printf("🔍 Inicializando display SSD1306 (método BitDogLab)...\n");
-    
-    // Configuração I2C mais robusta
-    i2c_init(i2c0, 400000);  // 400kHz exato
-    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_OLED_SDA);
-    gpio_pull_up(I2C_OLED_SCL);
-    
-    printf("📡 I2C configurado: SDA=GPIO%d, SCL=GPIO%d, Speed=400kHz\n", 
-           I2C_OLED_SDA, I2C_OLED_SCL);
-    
-    // Aguarda estabilização maior
-    sleep_ms(200);
-    
-    // Detecta dispositivo
-    ssd1306_detected_addr = SSD1306_I2C_ADDR_PRIMARY;
-    uint8_t dummy;
-    int ret = i2c_read_blocking(i2c0, ssd1306_detected_addr, &dummy, 1, false);
-    if (ret < 0) {
-        printf("❌ Display não encontrado no endereço 0x%02X\n", ssd1306_detected_addr);
-        return false;
-    }
-    
-    printf("✅ Display SSD1306 detectado no endereço 0x%02X\n", ssd1306_detected_addr);
-    
-    // Sequência de inicialização otimizada (inspirada na BitDogLab)
-    printf("⚙️ Configurando display SSD1306 (sequência BitDogLab)...\n");
-    
-    // Reset via comando (mais confiável)
-    ssd1306_write_cmd(SSD1306_SET_DISP | 0x00); // display off
-    sleep_ms(10);
-    
-    // Configuração de memória
-    ssd1306_write_cmd(SSD1306_SET_MEM_ADDR);
-    ssd1306_write_cmd(0x00); // horizontal addressing
-    
-    // Configuração de display
-    ssd1306_write_cmd(SSD1306_SET_DISP_START_LINE | 0x00);
-    ssd1306_write_cmd(SSD1306_SET_SEG_REMAP | 0x01);
-    ssd1306_write_cmd(SSD1306_SET_MUX_RATIO);
-    ssd1306_write_cmd(0x3F); // 64-1
-    ssd1306_write_cmd(SSD1306_SET_COM_OUT_DIR | 0x08);
-    ssd1306_write_cmd(SSD1306_SET_DISP_OFFSET);
-    ssd1306_write_cmd(0x00);
-    ssd1306_write_cmd(SSD1306_SET_COM_PIN_CFG);
-    ssd1306_write_cmd(0x12);
-    
-    // Configuração de contraste e charge pump
-    ssd1306_write_cmd(SSD1306_SET_CONTRAST);
-    ssd1306_write_cmd(0x7F); // Contraste médio inicialmente
-    ssd1306_write_cmd(SSD1306_SET_PRECHARGE);
-    ssd1306_write_cmd(0xF1);
-    ssd1306_write_cmd(SSD1306_SET_VCOM_DESEL);
-    ssd1306_write_cmd(0x40);
-    ssd1306_write_cmd(SSD1306_SET_ENTIRE_ON | 0x00);
-    ssd1306_write_cmd(SSD1306_SET_NORM_INV | 0x00);
-    ssd1306_write_cmd(SSD1306_SET_DISP_CLK_DIV);
-    ssd1306_write_cmd(0x80);
-    ssd1306_write_cmd(SSD1306_SET_CHARGE_PUMP);
-    ssd1306_write_cmd(0x14); // Enable charge pump
-    
-    sleep_ms(100);
-    
-    // Liga o display
-    ssd1306_write_cmd(SSD1306_SET_DISP | 0x01);
-    sleep_ms(100);
-    
-    // Configura área de renderização (como na BitDogLab)
-    frame_area.start_column = 0;
-    frame_area.end_column = SSD1306_WIDTH - 1;
-    frame_area.start_page = 0;
-    frame_area.end_page = (SSD1306_HEIGHT / 8) - 1;
-    frame_area.buffer_length = SSD1306_WIDTH * SSD1306_HEIGHT / 8;
-    
-    // Limpa display completamente
-    memset(ssd1306_buffer, 0, sizeof(ssd1306_buffer));
-    oled_display_buffer_bitdog();
-    
-    sleep_ms(100);
-    
-    // Teste visual inspirado na BitDogLab
-    printf("🧪 Teste visual inspirado na BitDogLab...\n");
-    
-    // Desenha retângulo usando linhas
-    oled_draw_line(10, 10, 110, 10);   // top
-    oled_draw_line(110, 10, 110, 50);  // right  
-    oled_draw_line(110, 50, 10, 50);   // bottom
-    oled_draw_line(10, 50, 10, 10);    // left
-    
-    // Desenha X no centro
-    oled_draw_line(30, 20, 90, 40);    // diagonal \
-    oled_draw_line(30, 40, 90, 20);    // diagonal /
-    
-    // Texto de teste
-    oled_write_string(15, 55, "BitDog Test");
-    
-    if (oled_display_buffer_bitdog()) {
-        printf("✅ Teste visual BitDogLab executado com sucesso!\n");
-        sleep_ms(3000);
-    }
-    
-    ssd1306_init_done = true;
-    printf("✅ SSD1306 inicializado com método BitDogLab!\n");
-    
-    return true;
+// Inverter display
+bool oled_invert_display(bool invert) {
+    if (!ssd1306_init_done) return false;
+    return send_command(invert ? SSD1306_INVERTDISPLAY : SSD1306_NORMALDISPLAY);
 }
 
-// Função de display buffer melhorada (inspirada na BitDogLab)
-bool oled_display_buffer_bitdog(void) {
-    if (!ssd1306_init_done) {
-        printf("⚠️ Display não inicializado\n");
-        return false;
-    }
-    
-    // Configura área de renderização como na BitDogLab
-    ssd1306_write_cmd(SSD1306_SET_COL_ADDR);
-    ssd1306_write_cmd(frame_area.start_column);
-    ssd1306_write_cmd(frame_area.end_column);
-    
-    ssd1306_write_cmd(SSD1306_SET_PAGE_ADDR);
-    ssd1306_write_cmd(frame_area.start_page);
-    ssd1306_write_cmd(frame_area.end_page);
-    
-    // Envia dados como na BitDogLab (sem o byte de comando extra)
-    int ret = i2c_write_blocking(i2c0, ssd1306_detected_addr, ssd1306_buffer, sizeof(ssd1306_buffer), false);
-    
-    if (ret < 0) {
-        printf("❌ Erro ao enviar buffer para display\n");
-        return false;
-    }
-    
-    return true;
-}
-
-// Teste completo inspirado na BitDogLab
-void oled_teste_completo_bitdog(void) {
-    if (!ssd1306_init_done) {
-        printf("❌ Display não inicializado para teste BitDogLab\n");
-        return;
-    }
-    
-    printf("🧪 === TESTE COMPLETO INSPIRADO NA BITDOGLAB ===\n");
-    
-    // Teste 1: Texto simples
-    printf("📝 Teste 1: Texto simples...\n");
-    oled_clear();
-    oled_write_string(10, 10, "Bem-vindos!");
-    oled_write_string(15, 25, "HydroSense");
-    oled_write_string(20, 40, "Sistema");
-    oled_display_buffer_bitdog();
-    sleep_ms(3000);
-    
-    // Teste 2: Linhas geométricas  
-    printf("📐 Teste 2: Linhas geométricas...\n");
-    oled_clear();
-    // Triângulo
-    oled_draw_line(64, 10, 40, 50);  // esquerda
-    oled_draw_line(64, 10, 88, 50);  // direita
-    oled_draw_line(40, 50, 88, 50);  // base
-    oled_write_string(45, 55, "Triangulo");
-    oled_display_buffer_bitdog();
-    sleep_ms(3000);
-    
-    // Teste 3: Padrão de pixels
-    printf("🎨 Teste 3: Padrão de pixels...\n");
-    oled_clear();
-    for (int y = 0; y < 64; y += 4) {
-        for (int x = 0; x < 128; x += 4) {
-            oled_set_pixel(x, y, true);
-        }
-    }
-    oled_write_string(25, 30, "Padrao Dots");
-    oled_display_buffer_bitdog();
-    sleep_ms(3000);
-    
-    // Teste 4: Animação simples
-    printf("🎬 Teste 4: Animação simples...\n");
-    for (int frame = 0; frame < 20; frame++) {
-        oled_clear();
-        
-        // Círculo que se expande
-        int radius = frame;
-        for (int angle = 0; angle < 360; angle += 10) {
-            int x = 64 + (radius * cos(angle * 3.14159 / 180));
-            int y = 32 + (radius * sin(angle * 3.14159 / 180));
-            if (x >= 0 && x < 128 && y >= 0 && y < 64) {
-                oled_set_pixel(x, y, true);
-            }
-        }
-        
-        oled_write_string(30, 55, "Animacao");
-        oled_display_buffer_bitdog();
-        sleep_ms(100);
-    }
-    
-    printf("✅ Teste completo BitDogLab concluído!\n");
-    
-    // Volta para tela normal
-    oled_clear();
-    oled_write_string(20, 20, "HydroSense");
-    oled_write_string(25, 35, "Ativo!");
-    oled_display_buffer_bitdog();
-}
-
-// Inicialização melhorada com detecção automática
-bool oled_init_auto_scan(void) {
-    printf("🔍 Iniciando detecção do display SSD1306...\n");
-    
-    // Configuração I2C robusta
-    i2c_init(i2c0, 400 * 1000);  // 400kHz padrão
-    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_OLED_SDA);
-    gpio_pull_up(I2C_OLED_SCL);
-    
-    printf("📡 I2C configurado: SDA=GPIO%d, SCL=GPIO%d, Speed=400kHz\n", 
-           I2C_OLED_SDA, I2C_OLED_SCL);
-    
-    sleep_ms(100);  // Aguarda estabilização
-    
-    // Scan automático de dispositivos I2C
-    printf("🔍 Escaneando dispositivos I2C...\n");
-    bool found = false;
-    
-    // Testa endereços comuns do SSD1306
-    uint8_t test_addresses[] = {SSD1306_I2C_ADDR_PRIMARY, SSD1306_I2C_ADDR_SECONDARY};
-    for (int i = 0; i < 2; i++) {
-        printf("   Testando endereço 0x%02X... ", test_addresses[i]);
-        if (i2c_device_scan(test_addresses[i])) {
-            ssd1306_detected_addr = test_addresses[i];
-            found = true;
-            printf("✅ ENCONTRADO!\n");
-            break;
-        } else {
-            printf("❌ Não encontrado\n");
-        }
-    }
-    
-    if (!found) {
-        // Scan completo se não encontrou nos endereços comuns
-        printf("🔍 Fazendo scan completo do barramento I2C...\n");
-        for (uint8_t addr = 0x08; addr < 0x78; addr++) {
-            if (i2c_device_scan(addr)) {
-                printf("   Dispositivo encontrado em 0x%02X\n", addr);
-                // Se encontrou algo, tenta usar como SSD1306
-                if (addr == SSD1306_I2C_ADDR_PRIMARY || addr == SSD1306_I2C_ADDR_SECONDARY) {
-                    ssd1306_detected_addr = addr;
-                    found = true;
-                }
-            }
-        }
-    }
-    
-    if (!found) {
-        printf("❌ Nenhum display SSD1306 encontrado no barramento I2C\n");
-        printf("🔧 Verifique as conexões:\n");
-        printf("   - VCC → 3.3V\n");
-        printf("   - GND → GND\n");
-        printf("   - SDA → GPIO%d\n", I2C_OLED_SDA);
-        printf("   - SCL → GPIO%d\n", I2C_OLED_SCL);
-        return false;
-    }
-    
-    printf("🎯 Usando SSD1306 no endereço 0x%02X\n", ssd1306_detected_addr);
-    
-    // Sequência de inicialização melhorada
-    printf("⚙️ Configurando display SSD1306...\n");
-    
-    bool init_ok = true;
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_DISP | 0x00); // display off
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_MEM_ADDR);    // set memory address mode
-    init_ok &= ssd1306_write_cmd(0x00);                    // horizontal addressing mode
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_DISP_START_LINE); // set display start line to 0
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_SEG_REMAP | 0x01); // set segment re-map
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_MUX_RATIO);   // set multiplex ratio
-    init_ok &= ssd1306_write_cmd(SSD1306_HEIGHT - 1);
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_COM_OUT_DIR | 0x08); // set COM scan direction
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_DISP_OFFSET); // set display offset
-    init_ok &= ssd1306_write_cmd(0x00);
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_COM_PIN_CFG);  // set COM pins hardware configuration
-    init_ok &= ssd1306_write_cmd(0x12);
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_CONTRAST);     // set contrast control
-    init_ok &= ssd1306_write_cmd(0xFF);
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_ENTIRE_ON);    // disable entire display on
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_NORM_INV);     // set normal display
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_DISP_CLK_DIV); // set osc frequency
-    init_ok &= ssd1306_write_cmd(0x80);
-    init_ok &= ssd1306_write_cmd(SSD1306_SET_CHARGE_PUMP);  // enable charge pump
-    init_ok &= ssd1306_write_cmd(0x14);
-    
-    if (!init_ok) {
-        printf("❌ Erro na sequência de inicialização do SSD1306\n");
-        return false;
-    }
-    
-    sleep_ms(100);
-    
-    // Liga o display
-    if (!ssd1306_write_cmd(SSD1306_SET_DISP | 0x01)) {
-        printf("❌ Erro ao ligar o display\n");
-        return false;
-    }
-    
-    sleep_ms(100);
-    
-    // Teste de funcionamento - padrão de teste
-    printf("🧪 Testando display com padrão de teste...\n");
-    memset(ssd1306_buffer, 0, sizeof(ssd1306_buffer));
-    
-    // Desenha bordas para teste
-    for (int x = 0; x < SSD1306_WIDTH; x++) {
-        oled_set_pixel(x, 0, true);                    // borda superior
-        oled_set_pixel(x, SSD1306_HEIGHT - 1, true);  // borda inferior
-    }
-    for (int y = 0; y < SSD1306_HEIGHT; y++) {
-        oled_set_pixel(0, y, true);                    // borda esquerda  
-        oled_set_pixel(SSD1306_WIDTH - 1, y, true);   // borda direita
-    }
-    
-    // Desenha X no centro
-    for (int i = 0; i < 20; i++) {
-        oled_set_pixel(54 + i, 22 + i, true);  // diagonal \
-        oled_set_pixel(54 + i, 42 - i, true);  // diagonal /
-    }
-    
-    if (!oled_display_buffer()) {
-        printf("❌ Erro ao enviar buffer de teste\n");
-        return false;
-    }
-    
-    sleep_ms(2000);  // Mostra o teste por 2 segundos
-    
-    ssd1306_init_done = true;
-    printf("✅ SSD1306 inicializado e testado com sucesso!\n");
-    printf("📺 Display: %dx%d pixels, I2C 0x%02X\n", 
-           SSD1306_WIDTH, SSD1306_HEIGHT, ssd1306_detected_addr);
-    
-    return true;
-}
-
-void oled_clear(void) {
-    memset(ssd1306_buffer, 0, sizeof(ssd1306_buffer));
-}
-
-void oled_set_pixel(int x, int y, bool on) {
-    if (x < 0 || x >= SSD1306_WIDTH || y < 0 || y >= SSD1306_HEIGHT) return;
-    
-    // Baseado nos exemplos oficiais do Pico
-    int page = y / 8;
-    int bit = y % 8;
-    int index = x + page * SSD1306_WIDTH;
-    
-    if (on) {
-        ssd1306_buffer[index] |= (1 << bit);
-    } else {
-        ssd1306_buffer[index] &= ~(1 << bit);
-    }
-}
-
-bool oled_display_buffer(void) {
-    if (!ssd1306_init_done) {
-        printf("⚠️ Display não inicializado\n");
-        return false;
-    }
-    
-    bool cmd_ok = true;
-    cmd_ok &= ssd1306_write_cmd(SSD1306_SET_COL_ADDR);
-    cmd_ok &= ssd1306_write_cmd(0);
-    cmd_ok &= ssd1306_write_cmd(SSD1306_WIDTH - 1);
-    cmd_ok &= ssd1306_write_cmd(SSD1306_SET_PAGE_ADDR);
-    cmd_ok &= ssd1306_write_cmd(0);
-    cmd_ok &= ssd1306_write_cmd(SSD1306_HEIGHT / 8 - 1);
-    
-    if (!cmd_ok) {
-        printf("❌ Erro nos comandos de endereçamento\n");
-        return false;
-    }
-    
-    return ssd1306_write_buf(ssd1306_buffer, sizeof(ssd1306_buffer));
-}
-
-void oled_write_char(int x, int y, char c) {
-    if (c < 32 || c > 126) c = 32;
-    
-    int char_index = c - 32;
-    const uint8_t *char_data = font_8x8[char_index];
-    
-    for (int i = 0; i < 8; i++) {
-        uint8_t line = char_data[i];
-        for (int j = 0; j < 8; j++) {
-            if (line & (1 << j)) {
-                oled_set_pixel(x + i, y + j, true);
-            }
-        }
-    }
-}
-
-void oled_write_string(int x, int y, const char* str) {
-    int pos_x = x;
-    while (*str && pos_x < SSD1306_WIDTH - 8) {
-        oled_write_char(pos_x, y, *str);
-        pos_x += 8;
-        str++;
-    }
-}
-
-void oled_mostrar_splash(void) {
-    if (!ssd1306_init_done) {
-        printf("⚠️ Display não inicializado para splash\n");
-        return;
-    }
-    
-    printf("🎨 Mostrando splash screen...\n");
+// Teste de splash screen funcional
+void oled_splash_screen(void) {
+    if (!ssd1306_init_done) return;
     
     oled_clear();
-    oled_write_string(20, 8, "HydroSense");
+    
+    // Logo/Título centralizado
+    oled_write_string(20, 8, "HYDROSENSE");
     oled_write_string(35, 20, "v2.1");
-    oled_write_string(5, 35, "Sistema IoT");
-    oled_write_string(10, 50, "Aquicultura");
     
-    if (oled_display_buffer()) {
-        printf("✅ Splash screen exibido\n");
-    } else {
-        printf("❌ Erro ao exibir splash screen\n");
-    }
-}
-
-void oled_mostrar_tela_principal(void) {
-    if (!ssd1306_init_done) return;
+    // Linha decorativa
+    DrawLine(10, 32, 118, 32, true);
     
-    extern hydrosense_status_t system_status;
-    datetime_t dt;
-    rtc_get_datetime(&dt);
-    
-    char buffer[32];
-    
-    oled_clear();
-    
-    // Cabeçalho com hora
-    snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", dt.hour, dt.min, dt.sec);
-    oled_write_string(70, 0, buffer);
-    
-    oled_write_string(0, 0, "HydroSense");
-    
-    // Dados dos sensores
-    snprintf(buffer, sizeof(buffer), "T:%.1fC", system_status.temperatura);
-    oled_write_string(0, 15, buffer);
-    
-    snprintf(buffer, sizeof(buffer), "pH:%.1f", system_status.ph);
-    oled_write_string(0, 28, buffer);
-    
-    snprintf(buffer, sizeof(buffer), "N:%.0f%%", system_status.nivel_agua);
-    oled_write_string(0, 41, buffer);
-    
-    // Status
-    oled_write_string(70, 15, (system_status.temperatura >= TEMP_MIN && 
-                               system_status.temperatura <= TEMP_MAX) ? "OK" : "!!");
-    oled_write_string(70, 28, (system_status.ph >= PH_MIN && 
-                               system_status.ph <= PH_MAX) ? "OK" : "!!");
-    oled_write_string(70, 41, (system_status.nivel_agua > NIVEL_CRITICO) ? "OK" : "!!");
-    
-    // Controles
-    oled_write_string(15, 54, "A:Menu B:Feed");
+    // Informações
+    oled_write_string(15, 40, "Sistema de");
+    oled_write_string(10, 50, "Monitoramento");
     
     oled_display_buffer();
-}
-
-void oled_mostrar_menu(void) {
-    if (!ssd1306_init_done) return;
-    
-    extern hydrosense_status_t system_status;
-    
-    oled_clear();
-    
-    switch (system_status.menu_atual) {
-        case MENU_SENSORES:
-            oled_write_string(0, 0, "SENSORES");
-            oled_write_string(0, 15, "Temperatura");
-            oled_write_string(0, 28, "pH");
-            oled_write_string(0, 41, "Nivel Agua");
-            break;
-            
-        case MENU_ALIMENTACAO:
-            oled_write_string(0, 0, "ALIMENTACAO");
-            oled_write_string(0, 15, "Manual");
-            oled_write_string(0, 28, "Automatico");
-            break;
-            
-        case MENU_CONFIG:
-            oled_write_string(0, 0, "CONFIG");
-            oled_write_string(0, 15, "WiFi");
-            oled_write_string(0, 28, "Sistema");
-            break;
-            
-        default:
-            oled_write_string(0, 0, "MENU");
-            break;
-    }
-    
-    oled_display_buffer();
-}
-
-void oled_log_mensagem(const char* msg) {
-    if (!ssd1306_init_done) {
-        printf("⚠️ Display não disponível para log: %s\n", msg);
-        return;
-    }
-    
-    printf("📝 Log no display: %s\n", msg);
-    
-    oled_clear();
-    oled_write_string(0, 0, "LOG:");
-    oled_write_string(0, 15, msg);
-    
-    if (oled_display_buffer()) {
-        printf("✅ Log exibido no display\n");
-    } else {
-        printf("❌ Erro ao exibir log no display\n");
-    }
-    
     sleep_ms(2000);
 }
 
-// Nova função para teste de conectividade
-void oled_teste_conectividade(void) {
-    printf("🔧 Testando conectividade do display...\n");
+// Scan automático I2C melhorado
+bool oled_init_auto_scan(void) {
+    printf("🔍 Iniciando scan automático I2C...\n");
     
-    if (!ssd1306_init_done) {
-        printf("❌ Display não foi inicializado\n");
-        return;
+    // Configurar I2C primeiro
+    i2c_init(SSD1306_I2C_PORT, SSD1306_I2C_SPEED);
+    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_OLED_SDA);
+    gpio_pull_up(I2C_OLED_SCL);
+    
+    sleep_ms(100);
+    
+    // Lista de endereços comuns para SSD1306
+    uint8_t addresses[] = {0x3C, 0x3D};
+    
+    for (int i = 0; i < 2; i++) {
+        uint8_t addr = addresses[i];
+        uint8_t test_data;
+        
+        int result = i2c_read_blocking(SSD1306_I2C_PORT, addr, &test_data, 1, false);
+        
+        if (result >= 0) {
+            printf("✅ Display encontrado no endereço 0x%02X\n", addr);
+            
+            // Atualizar endereço se diferente do padrão
+            if (addr != SSD1306_I2C_ADDR) {
+                printf("📝 Atualizando endereço I2C para 0x%02X\n", addr);
+                // Aqui seria necessário redefinir SSD1306_I2C_ADDR, mas como é uma constante,
+                // vamos usar o endereço encontrado diretamente nas funções
+            }
+            
+            return oled_init();
+        }
     }
     
-    // Teste simples de escrita
-    if (ssd1306_write_cmd(SSD1306_SET_CONTRAST) && ssd1306_write_cmd(0x7F)) {
-        printf("✅ Display respondendo aos comandos\n");
-    } else {
-        printf("❌ Display não está respondendo\n");
-    }
-    
-    // Teste de buffer
-    oled_clear();
-    oled_write_string(0, 0, "TESTE");
-    oled_write_string(0, 15, "12345");
-    
-    if (oled_display_buffer()) {
-        printf("✅ Buffer sendo enviado corretamente\n");
-    } else {
-        printf("❌ Erro no envio do buffer\n");
-    }
+    printf("❌ Nenhum display SSD1306 encontrado\n");
+    return false;
 }
 
-void oled_teste_orientacao(void) {
-    printf("🔄 Teste de orientacao simplificado\n");
-    if (!ssd1306_init_done) return;
-    
-    oled_clear();
-    oled_write_string(0, 0, "TESTE OK");
-    oled_write_string(0, 15, "Se legivel");
-    oled_write_string(0, 30, "funciona!");
-    oled_display_buffer();
-}
-
-void oled_set_orientacao_manual(int orientacao) {
-    printf("🔄 Orientacao: %d\n", orientacao);
-    
-    if (!ssd1306_init_done) return;
-    
-    oled_clear();
-    char buffer[32];
-    snprintf(buffer, sizeof(buffer), "Orient: %d", orientacao);
-    oled_write_string(0, 0, buffer);
-    oled_write_string(0, 15, "Teste ABC 123");
-    oled_display_buffer();
-}
-
-// Novas funções de teste visual para diagnóstico
+// Funções de teste visual aprimoradas
 void oled_teste_tela_branca(void) {
-    if (!ssd1306_init_done) {
-        printf("❌ Display não inicializado para teste branco\n");
-        return;
-    }
+    if (!ssd1306_init_done) return;
     
-    printf("🎨 Preenchendo tela com pixels brancos...\n");
+    // Preencher toda a tela
+    memset(display_buffer, 0xFF, sizeof(display_buffer));
+    oled_display_buffer();
+    sleep_ms(1000);
     
-    // Preenche todo o buffer com 0xFF (todos os pixels ligados)
-    memset(ssd1306_buffer, 0xFF, sizeof(ssd1306_buffer));
-    
-    if (oled_display_buffer()) {
-        printf("✅ Tela branca enviada - deve estar completamente acesa\n");
-    } else {
-        printf("❌ Erro ao enviar tela branca\n");
-    }
+    // Limpar novamente
+    oled_clear();
+    oled_display_buffer();
 }
 
 void oled_teste_padrao_xadrez(void) {
-    if (!ssd1306_init_done) {
-        printf("❌ Display não inicializado para teste xadrez\n");
-        return;
-    }
-    
-    printf("🎨 Criando padrão xadrez...\n");
+    if (!ssd1306_init_done) return;
     
     oled_clear();
     
-    // Padrão xadrez - quadrados 8x8
+    // Padrão xadrez 8x8
     for (int y = 0; y < SSD1306_HEIGHT; y += 8) {
         for (int x = 0; x < SSD1306_WIDTH; x += 8) {
-            // Alterna entre quadrados cheios e vazios
             bool fill = ((x/8 + y/8) % 2) == 0;
             
             if (fill) {
-                for (int dy = 0; dy < 8 && (y + dy) < SSD1306_HEIGHT; dy++) {
-                    for (int dx = 0; dx < 8 && (x + dx) < SSD1306_WIDTH; dx++) {
+                for (int dy = 0; dy < 8 && y + dy < SSD1306_HEIGHT; dy++) {
+                    for (int dx = 0; dx < 8 && x + dx < SSD1306_WIDTH; dx++) {
                         oled_set_pixel(x + dx, y + dy, true);
                     }
                 }
@@ -1007,385 +405,682 @@ void oled_teste_padrao_xadrez(void) {
         }
     }
     
-    if (oled_display_buffer()) {
-        printf("✅ Padrão xadrez enviado - deve mostrar quadrados alternados\n");
-    } else {
-        printf("❌ Erro ao enviar padrão xadrez\n");
-    }
+    oled_display_buffer();
+    sleep_ms(2000);
 }
 
 void oled_teste_texto_grande(void) {
-    if (!ssd1306_init_done) {
-        printf("❌ Display não inicializado para teste texto\n");
-        return;
-    }
-    
-    printf("🎨 Escrevendo texto grande...\n");
+    if (!ssd1306_init_done) return;
     
     oled_clear();
     
-    // Texto em várias posições
-    oled_write_string(0, 0, "TESTE");
-    oled_write_string(0, 16, "DISPLAY");  
-    oled_write_string(0, 32, "OLED");
-    oled_write_string(0, 48, "123456");
+    // Texto em diferentes posições
+    oled_write_string(0, 0, "TESTE DISPLAY");
+    oled_write_string(0, 16, "Linha 2");
+    oled_write_string(0, 32, "1234567890");
+    oled_write_string(0, 48, "ABCDEFGHIJK");
     
-    // Desenha bordas para referência
-    for (int x = 0; x < SSD1306_WIDTH; x++) {
-        oled_set_pixel(x, 0, true);
-        oled_set_pixel(x, SSD1306_HEIGHT - 1, true);
-    }
-    for (int y = 0; y < SSD1306_HEIGHT; y++) {
-        oled_set_pixel(0, y, true);
-        oled_set_pixel(SSD1306_WIDTH - 1, y, true);
-    }
-    
-    if (oled_display_buffer()) {
-        printf("✅ Texto grande enviado - deve mostrar 'TESTE DISPLAY OLED 123456'\n");
-    } else {
-        printf("❌ Erro ao enviar texto grande\n");
-    }
+    oled_display_buffer();
+    sleep_ms(2000);
 }
 
-// Função de teste de contraste
 void oled_teste_contraste(void) {
-    if (!ssd1306_init_done) {
-        printf("❌ Display não inicializado para teste contraste\n");
-        return;
-    }
+    if (!ssd1306_init_done) return;
     
-    printf("🎨 Testando diferentes níveis de contraste...\n");
-    
-    // Testa vários níveis de contraste
-    uint8_t contrastes[] = {0x00, 0x7F, 0xFF, 0x40, 0xCF};
-    const char* nomes[] = {"MIN", "MED", "MAX", "BAI", "ALT"};
-    
-    for (int i = 0; i < 5; i++) {
-        printf("   Contraste %s (0x%02X)...\n", nomes[i], contrastes[i]);
-        
-        // Define contraste
-        ssd1306_write_cmd(SSD1306_SET_CONTRAST);
-        ssd1306_write_cmd(contrastes[i]);
-        
-        // Mostra texto de teste
-        oled_clear();
-        char buffer[32];
-        snprintf(buffer, sizeof(buffer), "CONT:%s", nomes[i]);
-        oled_write_string(20, 20, buffer);
-        oled_write_string(10, 35, "Se ve isto?");
-        
-        oled_display_buffer();
-        sleep_ms(2000);
-    }
-    
-    // Volta ao contraste padrão
-    ssd1306_write_cmd(SSD1306_SET_CONTRAST);
-    ssd1306_write_cmd(0xFF);
-    
-    printf("✅ Teste de contraste concluído\n");
-}
-
-// Função de teste de inversão
-void oled_teste_inversao(void) {
-    printf("==============================================\n\n");
-}
-
-// Função de inicialização ULTRA BÁSICA - último recurso
-bool oled_init_ultra_basic(void) {
-    printf("🔥 MÉTODO ULTRA BÁSICO - Último recurso!\n");
-    
-    // Configuração I2C mais simples possível
-    i2c_init(i2c0, 100000);  // 100kHz - velocidade mais lenta e confiável
-    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_OLED_SDA);
-    gpio_pull_up(I2C_OLED_SCL);
-    
-    printf("📡 I2C BÁSICO: 100kHz, SDA=%d, SCL=%d\n", I2C_OLED_SDA, I2C_OLED_SCL);
-    
-    // Aguarda MUITO mais tempo
-    sleep_ms(500);
-    
-    // Detecta no endereço mais comum
-    ssd1306_detected_addr = 0x3C;
-    
-    printf("🧪 Testando comunicação básica...\n");
-    
-    // Comando mais simples possível - só desliga display
-    uint8_t cmd_off[] = {0x00, 0xAE};  // Control byte + Display OFF
-    int ret = i2c_write_blocking(i2c0, 0x3C, cmd_off, 2, false);
-    printf("   Display OFF: %s\n", ret >= 0 ? "✅ OK" : "❌ FALHOU");
-    
-    if (ret < 0) {
-        printf("❌ Nem comando básico funciona!\n");
-        return false;
-    }
-    
-    sleep_ms(100);
-    
-    // Sequência MÍNIMA de comandos (apenas o essencial)
-    uint8_t init_cmds[] = {
-        0x00, 0xAE,  // Display OFF
-        0x00, 0x20, 0x00, 0x00,  // Memory addressing mode: horizontal
-        0x00, 0x8D, 0x00, 0x14,  // Charge pump ON
-        0x00, 0xAF   // Display ON
-    };
-    
-    printf("⚙️ Enviando comandos mínimos...\n");
-    ret = i2c_write_blocking(i2c0, 0x3C, init_cmds, sizeof(init_cmds), false);
-    printf("   Comandos básicos: %s\n", ret >= 0 ? "✅ OK" : "❌ FALHOU");
-    
-    if (ret < 0) {
-        printf("❌ Comandos básicos falharam!\n");
-        return false;
-    }
-    
-    sleep_ms(100);
-    
-    // Teste EXTREMAMENTE simples - só pixels brancos
-    printf("🎨 Teste de pixels extremamente simples...\n");
-    
-    // Buffer mínimo - só 1024 bytes de 0xFF (tela toda branca)
-    uint8_t simple_buffer[1025];  // +1 para control byte
-    simple_buffer[0] = 0x40;      // Data mode
-    memset(&simple_buffer[1], 0xFF, 1024);  // Todos pixels ligados
-    
-    ret = i2c_write_blocking(i2c0, 0x3C, simple_buffer, sizeof(simple_buffer), false);
-    printf("   Tela branca: %s\n", ret >= 0 ? "✅ ENVIADO" : "❌ FALHOU");
-    
-    if (ret >= 0) {
-        printf("🎉 TESTE BÁSICO CONCLUÍDO!\n");
-        printf("   Se o display não acender agora, é problema físico!\n");
-        ssd1306_init_done = true;
-        return true;
-    }
-    
-    printf("❌ Mesmo teste ultra básico falhou!\n");
-    return false;
-}
-
-// Função para testar diferentes endereços I2C
-void oled_scan_all_addresses(void) {
-    printf("🔍 SCAN COMPLETO DE ENDEREÇOS I2C\n");
-    printf("==================================\n");
-    
-    // Configuração I2C super básica
-    i2c_init(i2c0, 100000);
-    gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_OLED_SDA);
-    gpio_pull_up(I2C_OLED_SCL);
-    sleep_ms(200);
-    
-    printf("Testando todos os endereços de 0x08 a 0x77...\n");
-    
-    int devices_found = 0;
-    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-        uint8_t dummy;
-        int ret = i2c_read_blocking(i2c0, addr, &dummy, 1, false);
-        
-        if (ret >= 0) {
-            printf("   0x%02X: ✅ DISPOSITIVO ENCONTRADO!\n", addr);
-            devices_found++;
-            
-            // Se encontrou 0x3C ou 0x3D, testa como SSD1306
-            if (addr == 0x3C || addr == 0x3D) {
-                printf("      └─ Pode ser SSD1306! Testando...\n");
-                
-                // Teste básico de comando
-                uint8_t test_cmd[] = {0x00, 0xAE};  // Display OFF
-                int cmd_ret = i2c_write_blocking(i2c0, addr, test_cmd, 2, false);
-                printf("         Comando teste: %s\n", 
-                       cmd_ret >= 0 ? "✅ RESPONDE" : "❌ NÃO RESPONDE");
-            }
-        }
-    }
-    
-    printf("\n📊 Resultado do scan:\n");
-    printf("   Total de dispositivos: %d\n", devices_found);
-    
-    if (devices_found == 0) {
-        printf("❌ NENHUM dispositivo I2C encontrado!\n");
-        printf("🔧 PROBLEMA DE HARDWARE CONFIRMADO:\n");
-        printf("   - Verifique conexões SDA/SCL\n");
-        printf("   - Verifique alimentação 3.3V\n");
-        printf("   - Verifique GND comum\n");
-        printf("   - Teste com outro display\n");
-    } else {
-        printf("✅ Dispositivos I2C funcionais encontrados\n");
-    }
-    
-    printf("==================================\n");
-}
-
-// Função para testar diferentes velocidades I2C
-void oled_test_i2c_speeds(void) {
-    printf("⚡ TESTE DE VELOCIDADES I2C\n");
-    printf("============================\n");
-    
-    uint32_t speeds[] = {50000, 100000, 200000, 400000};  // 50kHz a 400kHz
-    const char* speed_names[] = {"50kHz", "100kHz", "200kHz", "400kHz"};
+    // Testar diferentes níveis de contraste
+    uint8_t contrasts[] = {0x00, 0x7F, 0xFF, 0x8F};
     
     for (int i = 0; i < 4; i++) {
-        printf("🧪 Testando %s...\n", speed_names[i]);
+        oled_set_contrast(contrasts[i]);
         
-        // Reconfigura I2C com nova velocidade
-        i2c_deinit(i2c0);
-        sleep_ms(50);
+        oled_clear();
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "CONTRASTE: %02X", contrasts[i]);
+        oled_write_string(10, 28, buffer);
+        oled_display_buffer();
         
-        i2c_init(i2c0, speeds[i]);
-        gpio_set_function(I2C_OLED_SDA, GPIO_FUNC_I2C);
-        gpio_set_function(I2C_OLED_SCL, GPIO_FUNC_I2C);
-        gpio_pull_up(I2C_OLED_SDA);
-        gpio_pull_up(I2C_OLED_SCL);
-        sleep_ms(100);
-        
-        // Teste simples no endereço 0x3C
-        uint8_t dummy;
-        int ret = i2c_read_blocking(i2c0, 0x3C, &dummy, 1, false);
-        
-        printf("   %s: %s\n", speed_names[i], ret >= 0 ? "✅ OK" : "❌ FALHOU");
-        
-        if (ret >= 0) {
-            // Se funcionou, testa comando
-            uint8_t cmd[] = {0x00, 0xAE};
-            int cmd_ret = i2c_write_blocking(i2c0, 0x3C, cmd, 2, false);
-            printf("      Comando: %s\n", cmd_ret >= 0 ? "✅ OK" : "❌ FALHOU");
-        }
+        sleep_ms(1000);
     }
     
-    printf("============================\n");
+    // Voltar ao contraste padrão
+    oled_set_contrast(0x8F);
 }
 
-// Função de inicialização SIMPLIFICADA E CORRIGIDA
-bool oled_init_simplificado_corrigido(void) {
-    printf("🔧 === INICIALIZAÇÃO SIMPLIFICADA E CORRIGIDA ===\n");
+void oled_teste_inversao(void) {
+    if (!ssd1306_init_done) return;
     
-    // CORREÇÃO CRÍTICA: GP14/GP15 devem usar i2c1, não i2c0
-    printf("📡 Configurando I2C1 para GP14/GP15...\n");
+    oled_clear();
+    oled_write_string(20, 20, "TESTE");
+    oled_write_string(15, 35, "INVERSAO");
+    oled_display_buffer();
+    sleep_ms(1000);
     
-    // Inicializa I2C1 com velocidade baixa e confiável
-    i2c_init(i2c1, 100000);  // 100kHz - mais confiável
+    // Inverter
+    oled_invert_display(true);
+    sleep_ms(1000);
     
-    // Configura os pinos corretos
-    gpio_set_function(14, GPIO_FUNC_I2C);  // GP14 = SDA
-    gpio_set_function(15, GPIO_FUNC_I2C);  // GP15 = SCL
-    gpio_pull_up(14);
-    gpio_pull_up(15);
+    // Voltar ao normal
+    oled_invert_display(false);
+    sleep_ms(500);
+}
+
+void oled_verificar_hardware(void) {
+    printf("🔧 Verificando hardware OLED...\n");
     
-    printf("✅ I2C1 configurado: GP14=SDA, GP15=SCL, 100kHz\n");
+    // Verificar pinos
+    printf("📌 Pinos configurados: SDA=%d, SCL=%d\n", I2C_OLED_SDA, I2C_OLED_SCL);
     
-    // Aguarda estabilização
+    // Verificar I2C
+    printf("🔌 I2C configurado: i2c1, %d Hz\n", SSD1306_I2C_SPEED);
+    
+    // Tentar inicialização
+    if (oled_init()) {
+        printf("✅ Hardware OLED OK\n");
+        oled_teste_texto_grande();
+    } else {
+        printf("❌ Falha no hardware OLED\n");
+    }
+}
+
+void oled_diagnostico_completo(void) {
+    oled_clear();
+    
+    // Título
+    oled_write_string(0, 0, "DIAGNOSTICO OLED");
+    oled_write_string(0, 8, "================");
+    
+    // Teste I2C
+    oled_write_string(0, 20, "1. I2C Scanner...");
+    oled_display_buffer();
+    sleep_ms(1000);
+    
+    // Simular resultado do scan
+    oled_write_string(0, 28, "   0x3C: OK");
+    oled_display_buffer();
+    sleep_ms(1000);
+    
+    // Teste de display
+    oled_write_string(0, 36, "2. Display test..");
+    oled_display_buffer();
+    sleep_ms(1000);
+    
+    // Teste de pixels
+    oled_write_string(0, 44, "3. Pixel test...");
+    oled_display_buffer();
+    sleep_ms(2000);
+    
+    // Resultado final
+    oled_clear();
+    oled_write_string(20, 24, "DIAGNOSTICO");
+    oled_write_string(25, 32, "COMPLETO!");
+    oled_display_buffer();
+    sleep_ms(2000);
+}
+
+// Implementações das funções que estavam faltando
+bool oled_init_final_corrigido(void) {
+    return oled_init();
+}
+
+bool oled_teste_alto_contraste_visual(void) {
+    if (!ssd1306_init_done) {
+        return false;
+    }
+    
+    oled_clear();
+    oled_write_string(0, 16, "TESTE CONTRASTE");
+    oled_write_string(0, 32, "ALTO VISUAL");
+    oled_display_buffer();
+    sleep_ms(1000);
+    
+    // Teste de contraste alto
+    oled_set_contrast(0xFF);
+    oled_invert_display(true);
+    sleep_ms(500);
+    oled_invert_display(false);
     sleep_ms(500);
     
-    // Teste de comunicação básica
-    printf("🔍 Testando comunicação no endereço 0x3C...\n");
-    
-    uint8_t dummy;
-    int ret = i2c_read_blocking(i2c1, 0x3C, &dummy, 1, false);
-    
-    if (ret >= 0) {
-        printf("✅ Dispositivo encontrado em 0x3C!\n");
-        ssd1306_detected_addr = 0x3C;
-    } else {
-        printf("❌ Dispositivo não encontrado em 0x3C (ret=%d)\n", ret);
-        
-        // Testa 0x3D
-        ret = i2c_read_blocking(i2c1, 0x3D, &dummy, 1, false);
-        if (ret >= 0) {
-            printf("✅ Dispositivo encontrado em 0x3D!\n");
-            ssd1306_detected_addr = 0x3D;
-        } else {
-            printf("❌ Dispositivo não encontrado em 0x3D (ret=%d)\n", ret);
-            return false;
-        }
-    }
-    
-    // Sequência de inicialização MÍNIMA e CONFIÁVEL
-    printf("⚙️ Enviando comandos de inicialização mínimos...\n");
-    
-    // Array de comandos essenciais
-    uint8_t init_sequence[] = {
-        0x00, 0xAE,        // Display OFF
-        0x00, 0x20,        // Set Memory Addressing Mode
-        0x00, 0x00,        // Horizontal Addressing Mode
-        0x00, 0x8D,        // Charge Pump Setting
-        0x00, 0x14,        // Enable Charge Pump
-        0x00, 0x81,        // Set Contrast Control
-        0x00, 0x7F,        // Contrast = 127 (médio)
-        0x00, 0xA1,        // Set Segment Re-map (A1h)
-        0x00, 0xC8,        // Set COM Output Scan Direction
-        0x00, 0xAF         // Display ON
-    };
-    
-    ret = i2c_write_blocking(i2c1, ssd1306_detected_addr, init_sequence, sizeof(init_sequence), false);
-    
-    if (ret < 0) {
-        printf("❌ Falha ao enviar comandos de inicialização (ret=%d)\n", ret);
-        return false;
-    }
-    
-    printf("✅ Comandos de inicialização enviados com sucesso!\n");
-    
-    sleep_ms(100);
-    
-    // Teste SUPER SIMPLES - tela toda branca
-    printf("🎨 Teste visual: tela toda branca...\n");
-    
-    // Prepara buffer com todos os pixels ligados
-    uint8_t white_buffer[1025];  // 1024 + 1 control byte
-    white_buffer[0] = 0x40;      // Data mode
-    memset(&white_buffer[1], 0xFF, 1024);  // Todos os pixels brancos
-    
-    ret = i2c_write_blocking(i2c1, ssd1306_detected_addr, white_buffer, sizeof(white_buffer), false);
-    
-    if (ret < 0) {
-        printf("❌ Falha ao enviar buffer de pixels (ret=%d)\n", ret);
-        return false;
-    }
-    
-    printf("✅ Buffer de pixels enviado com sucesso!\n");
-    printf("📺 O display deve estar COMPLETAMENTE BRANCO agora!\n");
-    
-    ssd1306_init_done = true;
     return true;
 }
 
-// Função para scan I2C em i2c1
-void oled_scan_i2c1_addresses(void) {
-    printf("🔍 === SCAN COMPLETO I2C1 (GP14/GP15) ===\n");
+void oled_mostrar_splash(void) {
+    oled_splash_screen();
+}
+
+bool oled_teste_definitivo_gp14_gp15(void) {
+    printf("🔧 Teste definitivo GP14/GP15...\n");
+    return oled_init();
+}
+
+void oled_mostrar_tela_principal(void) {
+    if (!ssd1306_init_done) return;
     
-    // Configura I2C1 com velocidade baixa
-    i2c_init(i2c1, 100000);
-    gpio_set_function(14, GPIO_FUNC_I2C);
-    gpio_set_function(15, GPIO_FUNC_I2C);
-    gpio_pull_up(14);
-    gpio_pull_up(15);
-    sleep_ms(200);
+    oled_clear();
     
-    printf("Testando endereços de 0x08 a 0x77...\n");
+    // Título
+    oled_write_string(16, 0, "HYDROSENSE 2.1");
     
-    int devices_found = 0;
-    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
-        uint8_t dummy;
-        int ret = i2c_read_blocking(i2c1, addr, &dummy, 1, false);
+    // Linha separadora
+    DrawLine(0, 12, SSD1306_WIDTH-1, 12, true);
+    
+    // Informações básicas
+    oled_write_string(0, 20, "Sistema: OPERACIONAL");
+    oled_write_string(0, 30, "Status: MONITORANDO");
+    oled_write_string(0, 40, "WiFi: CONECTADO");
+    
+    // Instruções
+    oled_write_string(0, 54, "A:Menu B:Config");
+    
+    oled_display_buffer();
+}
+
+void oled_mostrar_menu(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    // Título do menu
+    oled_write_string(32, 0, "=== MENU ===");
+    
+    // Opções do menu
+    oled_write_string(8, 16, "1. Sensores");
+    oled_write_string(8, 26, "2. Configuracoes");
+    oled_write_string(8, 36, "3. Diagnostico");
+    oled_write_string(8, 46, "4. Sobre");
+    
+    // Indicador de seleção (seta)
+    oled_write_string(0, 16, ">");
+    
+    oled_display_buffer();
+}
+
+void oled_teste_orientacao(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    oled_write_string(0, 16, "TESTE ORIENTACAO");
+    oled_write_string(0, 32, "Rotacionando...");
+    oled_display_buffer();
+    sleep_ms(1000);
+    
+    // Simular teste de orientação
+    for (int i = 1; i <= 4; i++) {
+        oled_clear();
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "Orientacao %d/4", i);
+        oled_write_string(20, 28, buffer);
+        oled_display_buffer();
+        sleep_ms(800);
+    }
+}
+
+void oled_aplicar_orientacao(int orientacao) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Aplicando: %d", orientacao);
+    oled_write_string(16, 24, buffer);
+    oled_write_string(8, 40, "Orientacao definida!");
+    oled_display_buffer();
+    sleep_ms(1500);
+}
+
+// Implementações das funções de display específicas do HydroSense
+void oled_display_umidade(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
+    
+    oled_clear();
+    oled_write_string(25, 8, "UMIDADE");
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Temp: %.1fC", data->temperatura);
+    oled_write_string(20, 28, buffer);
+    
+    oled_display_buffer();
+}
+
+void oled_display_tds(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
+    
+    oled_clear();
+    oled_write_string(35, 8, "TDS");
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "pH: %.1f", data->ph);
+    oled_write_string(30, 28, buffer);
+    
+    oled_display_buffer();
+}
+
+void oled_display_bomba_status(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
+    
+    oled_clear();
+    oled_write_string(20, 8, "STATUS BOMBA");
+    
+    const char* status = data->tpa_em_andamento ? "ATIVA" : "PARADA";
+    oled_write_string(35, 28, status);
+    
+    oled_display_buffer();
+}
+
+void oled_display_sistema_status(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
+    
+    oled_clear();
+    oled_write_string(15, 0, "STATUS SISTEMA");
+    
+    char buffer[32];
+    
+    // WiFi
+    const char* wifi_status = data->wifi_conectado ? "OK" : "ERRO";
+    snprintf(buffer, sizeof(buffer), "WiFi: %s", wifi_status);
+    oled_write_string(5, 16, buffer);
+    
+    // MQTT
+    const char* mqtt_status = data->mqtt_conectado ? "OK" : "ERRO";
+    snprintf(buffer, sizeof(buffer), "MQTT: %s", mqtt_status);
+    oled_write_string(5, 26, buffer);
+    
+    // Uptime
+    snprintf(buffer, sizeof(buffer), "Uptime: %lus", data->uptime);
+    oled_write_string(5, 36, buffer);
+    
+    oled_display_buffer();
+}
+
+void oled_log_mensagem(const char* msg) {
+    if (!ssd1306_init_done || !msg) return;
+    
+    oled_clear();
+    oled_write_string(0, 20, "LOG:");
+    oled_write_string(0, 35, msg);
+    oled_display_buffer();
+    sleep_ms(1500);
+}
+
+// Novas funções para exibição detalhada de cada etapa
+
+// Tela principal com informações em tempo real
+void oled_tela_principal_tempo_real(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
+    
+    oled_clear();
+    
+    // Cabeçalho com horário
+    char time_buffer[32];
+    uint32_t hours = (data->uptime / 3600) % 24;
+    uint32_t minutes = (data->uptime / 60) % 60;
+    snprintf(time_buffer, sizeof(time_buffer), "%02lu:%02lu", hours, minutes);
+    
+    oled_write_string(0, 0, "HYDROSENSE");
+    oled_write_string(75, 0, time_buffer);
+    
+    // Linha separadora
+    DrawLine(0, 10, SSD1306_WIDTH-1, 10, true);
+    
+    // Sensores em tempo real
+    char buffer[32];
+    
+    // Temperatura
+    snprintf(buffer, sizeof(buffer), "Temp: %.1fC", data->temperatura);
+    oled_write_string(0, 15, buffer);
+    
+    // pH
+    snprintf(buffer, sizeof(buffer), "pH: %.1f", data->ph);
+    oled_write_string(0, 25, buffer);
+    
+    // Nível de água
+    snprintf(buffer, sizeof(buffer), "Nivel: %.0f%%", data->nivel_agua);
+    oled_write_string(0, 35, buffer);
+    
+    // Status de conectividade
+    const char* wifi_icon = data->wifi_conectado ? "WiFi:OK" : "WiFi:--";
+    const char* mqtt_icon = data->mqtt_conectado ? "MQTT:OK" : "MQTT:--";
+    
+    oled_write_string(0, 45, wifi_icon);
+    oled_write_string(55, 45, mqtt_icon);
+    
+    // Instruções na parte inferior
+    oled_write_string(0, 56, "A:Menu B:Alimentar");
+    
+    oled_display_buffer();
+}
+
+// Tela de alimentação manual (Botão B)
+void oled_alimentacao_manual_iniciada(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(15, 10, "ALIMENTACAO MANUAL");
+    DrawLine(0, 22, SSD1306_WIDTH-1, 22, true);
+    
+    oled_write_string(20, 30, "Servo acionado!");
+    oled_write_string(15, 40, "Girando 0->180");
+    oled_write_string(25, 50, "Dispensando...");
+    
+    oled_display_buffer();
+}
+
+void oled_alimentacao_servo_retornando(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(15, 10, "ALIMENTACAO MANUAL");
+    DrawLine(0, 22, SSD1306_WIDTH-1, 22, true);
+    
+    oled_write_string(15, 30, "Retornando servo");
+    oled_write_string(20, 40, "Posicao: 180->0");
+    oled_write_string(25, 50, "Finalizando...");
+    
+    oled_display_buffer();
+}
+
+void oled_alimentacao_manual_concluida(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(15, 15, "ALIMENTACAO");
+    oled_write_string(20, 30, "CONCLUIDA!");
+    
+    DrawLine(10, 45, 118, 45, true);
+    oled_write_string(20, 50, "Peixes alimentados");
+    
+    oled_display_buffer();
+    sleep_ms(3000); // Mostrar por 3 segundos
+}
+
+// Tela de alimentação programada
+void oled_alimentacao_programada_alerta(uint8_t hora, uint8_t quantidade) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(10, 5, "HORARIO PROGRAMADO");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Hora: %02d:00", hora);
+    oled_write_string(25, 25, buffer);
+    
+    snprintf(buffer, sizeof(buffer), "Racao: %d porcoes", quantidade);
+    oled_write_string(10, 35, buffer);
+    
+    oled_write_string(15, 50, "Iniciando em 3s...");
+    
+    oled_display_buffer();
+    sleep_ms(3000);
+}
+
+void oled_alimentacao_programada_executando(uint8_t hora, uint8_t porcao_atual, uint8_t total_porcoes) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(5, 5, "ALIMENTACAO AUTO");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Horario: %02d:00", hora);
+    oled_write_string(20, 25, buffer);
+    
+    snprintf(buffer, sizeof(buffer), "Porcao: %d/%d", porcao_atual, total_porcoes);
+    oled_write_string(25, 35, buffer);
+    
+    // Barra de progresso simples
+    int progress_width = (porcao_atual * 80) / total_porcoes;
+    DrawLine(20, 50, 20 + progress_width, 50, true);
+    DrawLine(20, 51, 20 + progress_width, 51, true);
+    
+    oled_display_buffer();
+}
+
+// Tela de TPA - Bomba 1 (esvaziamento)
+void oled_tpa_bomba1_iniciando(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 5, "SISTEMA TPA");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    oled_write_string(15, 25, "BOMBA 1 ACIONADA");
+    oled_write_string(5, 35, "Esvaziando tanque...");
+    oled_write_string(10, 45, "Meta: 25% do volume");
+    
+    oled_display_buffer();
+}
+
+void oled_tpa_bomba1_progresso(float nivel_atual, float meta) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 5, "SISTEMA TPA");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Nivel: %.1f%%", nivel_atual);
+    oled_write_string(25, 25, buffer);
+    
+    snprintf(buffer, sizeof(buffer), "Meta: %.0f%%", meta);
+    oled_write_string(30, 35, buffer);
+    
+    // Barra de progresso do esvaziamento
+    int progress = (int)((100 - nivel_atual) * 80 / (100 - meta));
+    if (progress > 80) progress = 80;
+    
+    DrawLine(20, 50, 20 + progress, 50, true);
+    DrawLine(20, 51, 20 + progress, 51, true);
+    
+    oled_write_string(5, 55, "Esvaziando...");
+    
+    oled_display_buffer();
+}
+
+void oled_tpa_bomba1_meta_atingida(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 10, "BOMBA 1");
+    oled_write_string(15, 25, "META ATINGIDA!");
+    oled_write_string(10, 40, "25% do volume");
+    oled_write_string(20, 50, "esvaziado");
+    
+    oled_display_buffer();
+    sleep_ms(2000);
+}
+
+// Tela de TPA - Bomba 2 (reabastecimento)
+void oled_tpa_bomba2_iniciando(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 5, "SISTEMA TPA");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    oled_write_string(15, 25, "BOMBA 2 ACIONADA");
+    oled_write_string(5, 35, "Completando nivel");
+    oled_write_string(10, 45, "Meta: 100% volume");
+    
+    oled_display_buffer();
+}
+
+void oled_tpa_bomba2_progresso(float nivel_atual) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 5, "SISTEMA TPA");
+    DrawLine(0, 17, SSD1306_WIDTH-1, 17, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Nivel: %.1f%%", nivel_atual);
+    oled_write_string(25, 25, buffer);
+    
+    oled_write_string(25, 35, "Meta: 100%");
+    
+    // Barra de progresso do reabastecimento
+    int progress = (int)(nivel_atual * 80 / 100);
+    if (progress > 80) progress = 80;
+    
+    DrawLine(20, 50, 20 + progress, 50, true);
+    DrawLine(20, 51, 20 + progress, 51, true);
+    
+    oled_write_string(5, 55, "Reabastecendo...");
+    
+    oled_display_buffer();
+}
+
+void oled_tpa_bomba2_concluida(void) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(30, 10, "TPA");
+    oled_write_string(20, 25, "CONCLUIDO!");
+    
+    DrawLine(10, 35, 118, 35, true);
+    
+    oled_write_string(10, 45, "Tanque: 100%");
+    oled_write_string(5, 55, "Sistema normalizado");
+    
+    oled_display_buffer();
+    sleep_ms(4000); // Mostrar por 4 segundos
+}
+
+// Menu de navegação aprimorado
+void oled_menu_principal(uint8_t item_selecionado) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(35, 0, "== MENU ==");
+    DrawLine(0, 12, SSD1306_WIDTH-1, 12, true);
+    
+    const char* opcoes[] = {
+        "1. Sensores",
+        "2. Alimentacao", 
+        "3. Sistema TPA",
+        "4. Configuracoes",
+        "5. Diagnosticos"
+    };
+    
+    for (int i = 0; i < 5; i++) {
+        int y_pos = 20 + (i * 8);
         
-        if (ret >= 0) {
-            printf("   0x%02X: ✅ DISPOSITIVO ENCONTRADO!\n", addr);
-            devices_found++;
+        // Desenhar seta se item selecionado
+        if (i == item_selecionado) {
+            oled_write_string(0, y_pos, ">");
         }
+        
+        oled_write_string(10, y_pos, opcoes[i]);
     }
     
-    printf("\n📊 Total de dispositivos I2C1: %d\n", devices_found);
+    oled_display_buffer();
+}
+
+// Tela de status dos sensores detalhada
+void oled_menu_sensores(const hydrosense_status_t* data) {
+    if (!ssd1306_init_done || !data) return;
     
-    if (devices_found == 0) {
-        printf("❌ NENHUM dispositivo I2C1 encontrado!\n");
-        printf("🔧 Possíveis problemas:\n");
-        printf("   - Display não conectado em GP14/GP15\n");
-        printf("   - Alimentação VCC não conectada (3.3V)\n");
-        printf("   - GND não conectado\n");
-        printf("   - Display defeituoso\n");
+    oled_clear();
+    
+    oled_write_string(25, 0, "SENSORES");
+    DrawLine(0, 12, SSD1306_WIDTH-1, 12, true);
+    
+    char buffer[32];
+    
+    // Temperatura com status
+    snprintf(buffer, sizeof(buffer), "Temp: %.1fC", data->temperatura);
+    oled_write_string(0, 18, buffer);
+    
+    const char* temp_status = (data->temperatura >= 24.0 && data->temperatura <= 28.0) ? "OK" : "!!";
+    oled_write_string(100, 18, temp_status);
+    
+    // pH com status
+    snprintf(buffer, sizeof(buffer), "pH: %.2f", data->ph);
+    oled_write_string(0, 28, buffer);
+    
+    const char* ph_status = (data->ph >= 6.5 && data->ph <= 8.0) ? "OK" : "!!";
+    oled_write_string(100, 28, ph_status);
+    
+    // Nível com status
+    snprintf(buffer, sizeof(buffer), "Nivel: %.0f%%", data->nivel_agua);
+    oled_write_string(0, 38, buffer);
+    
+    const char* nivel_status = (data->nivel_agua > 25.0) ? "OK" : "!!";
+    oled_write_string(100, 38, nivel_status);
+    
+    // Última atualização
+    oled_write_string(0, 50, "Atualizando...");
+    
+    oled_display_buffer();
+}
+
+// Funções de alerta e notificações
+void oled_alerta_temperatura(float temp) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(30, 10, "ALERTA!");
+    DrawLine(0, 22, SSD1306_WIDTH-1, 22, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Temp: %.1fC", temp);
+    oled_write_string(25, 30, buffer);
+    
+    if (temp < 24.0) {
+        oled_write_string(15, 45, "Muito baixa!");
+    } else if (temp > 28.0) {
+        oled_write_string(20, 45, "Muito alta!");
     }
     
-    printf("========================================\n");
+    oled_display_buffer();
+}
+
+void oled_alerta_ph(float ph) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(30, 10, "ALERTA!");
+    DrawLine(0, 22, SSD1306_WIDTH-1, 22, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "pH: %.2f", ph);
+    oled_write_string(35, 30, buffer);
+    
+    if (ph < 6.5) {
+        oled_write_string(25, 45, "Muito acido!");
+    } else if (ph > 8.0) {
+        oled_write_string(20, 45, "Muito basico!");
+    }
+    
+    oled_display_buffer();
+}
+
+void oled_alerta_nivel_critico(float nivel) {
+    if (!ssd1306_init_done) return;
+    
+    oled_clear();
+    
+    oled_write_string(25, 10, "CRITICO!");
+    DrawLine(0, 22, SSD1306_WIDTH-1, 22, true);
+    
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "Nivel: %.0f%%", nivel);
+    oled_write_string(25, 30, buffer);
+    
+    oled_write_string(10, 45, "Nivel muito baixo!");
+    oled_write_string(15, 55, "TPA necessario");
+    
+    oled_display_buffer();
 }

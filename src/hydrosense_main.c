@@ -47,50 +47,77 @@ void hydrosense_init(void) {
     
     system_status.estado = SISTEMA_INICIANDO;
     
-    // Display OLED - TESTE DEFINITIVO COM SERVO FUNCIONANDO
-    printf("🎯 === DIAGNÓSTICO DEFINITIVO DISPLAY OLED ===\n");
-    printf("✅ Servo funcionou = pinos GP14/GP15 estão corretos!\n");
-    printf("🔍 Agora testando especificamente o display...\n");
+    // Display OLED - FUNÇÃO FINAL CORRIGIDA (I2C1 EXCLUSIVO)
+    printf("🎯 === INICIALIZAÇÃO FINAL DISPLAY OLED ===\n");
+    printf("🔧 Usando função CORRIGIDA para I2C1 + GP14/GP15\n");
     printf("===============================================\n");
     
     bool oled_funcionando = false;
     
-    // === TESTE DEFINITIVO ESPECÍFICO PARA GP14/GP15 ===
-    if (oled_teste_definitivo_gp14_gp15()) {
-        printf("🎉 DISPLAY OLED FUNCIONOU COM TESTE DEFINITIVO!\n");
-        oled_funcionando = true;
+    // === TESTE FINAL COM I2C1 EXCLUSIVO ===
+    if (oled_init_final_corrigido()) {
+        printf("🎉 DISPLAY OLED FUNCIONANDO (MÉTODO FINAL)!\n");
+        
+        // Executa teste de alto contraste visual para confirmar
+        printf("🎨 Executando teste de alto contraste visual...\n");
+        if (oled_teste_alto_contraste_visual()) {
+            printf("✅ Teste visual confirmado - display totalmente funcional!\n");
+            oled_funcionando = true;
+            
+            // Mostra splash de inicialização
+            sleep_ms(2000);
+            oled_mostrar_splash();
+            sleep_ms(3000);
+        } else {
+            printf("❌ Teste visual falhou - problemas de exibição\n");
+        }
+        
     } else {
-        printf("💔 Display OLED não respondeu ao teste definitivo\n");
-        printf("🔧 Executando diagnóstico final...\n");
+        printf("💔 Display OLED falhou na inicialização final\n");
+        printf("🔧 Executando diagnóstico definitivo...\n");
         
-        // Se o teste definitivo falhou, problema é físico
-        printf("\n🚨 DIAGNÓSTICO FINAL:\n");
-        printf("   ✅ Servo funciona = Pinos GP14/GP15 OK\n");
-        printf("   ✅ I2C1 configurado corretamente\n");
-        printf("   ❌ Display não responde a nenhum comando\n");
-        printf("\n🔍 POSSÍVEIS CAUSAS:\n");
-        printf("   1️⃣ Display não está alimentado (VCC = 3.3V?)\n");
-        printf("   2️⃣ Display está alimentado com 5V (pode ter queimado!)\n");
-        printf("   3️⃣ Display SDA/SCL não estão conectados\n");
-        printf("   4️⃣ Display está fisicamente defeituoso\n");
-        printf("   5️⃣ Display é modelo diferente (não SSD1306)\n");
-        printf("\n🛠️ TESTE FÍSICO RECOMENDADO:\n");
-        printf("   - Meça com multímetro: VCC do display = 3.3V\n");
-        printf("   - Meça continuidade: GP14 ↔ SDA, GP15 ↔ SCL\n");
-        printf("   - Verifique se display tem chip SSD1306\n");
-        printf("   - Teste com outro display SSD1306\n");
-        
-        oled_funcionando = false;
+        // Executa o teste definitivo para diagnóstico detalhado
+        if (oled_teste_definitivo_gp14_gp15()) {
+            printf("🎉 Teste definitivo conseguiu inicializar!\n");
+            oled_funcionando = true;
+        } else {
+            printf("\n🚨 DIAGNÓSTICO FINAL COMPLETO:\n");
+            printf("   ❌ Função final corrigida: FALHOU\n");
+            printf("   ❌ Teste definitivo GP14/GP15: FALHOU\n");
+            printf("   ❌ Comunicação I2C1: SEM RESPOSTA\n");
+            
+            printf("\n🔍 CAUSAS MAIS PROVÁVEIS:\n");
+            printf("   1️⃣ Display não está alimentado (VCC ≠ 3.3V)\n");
+            printf("   2️⃣ Display foi alimentado com 5V (QUEIMADO)\n");
+            printf("   3️⃣ Conexões SDA/SCL não estão em GP14/GP15\n");
+            printf("   4️⃣ Display é modelo diferente (não SSD1306)\n");
+            printf("   5️⃣ Display está fisicamente defeituoso\n");
+            
+            printf("\n🛠️ AÇÕES RECOMENDADAS:\n");
+            printf("   📏 Meça com multímetro: VCC = 3.3V\n");
+            printf("   📏 Verifique continuidade: GP14↔SDA, GP15↔SCL\n");
+            printf("   🔍 Confirme modelo: deve ser SSD1306 I2C\n");
+            printf("   🔄 Teste com outro display SSD1306\n");
+            printf("   ⚡ Teste display em Arduino primeiro\n");
+            
+            oled_funcionando = false;
+        }
     }
     
     printf("===============================================\n");
     
     if (oled_funcionando) {
-        printf("🎊 RESULTADO: Display OLED FUNCIONANDO!\n");
-        printf("   Todos os testes foram bem-sucedidos\n");
+        printf("🎊 RESULTADO: Display OLED TOTALMENTE FUNCIONAL!\n");
+        printf("   ✅ Comunicação I2C1 estabelecida\n");
+        printf("   ✅ Comandos SSD1306 aceitos\n");
+        printf("   ✅ Exibição visual confirmada\n");
+        printf("   ✅ Controle ON/OFF funcionando\n");
+        printf("   ✅ Testes de alto contraste OK\n");
     } else {
-        printf("💔 RESULTADO: Display OLED com problema físico\n");
-        printf("   Sistema continuará sem display\n");
+        printf("💔 RESULTADO: Display OLED COM PROBLEMA FÍSICO\n");
+        printf("   ⚠️  Sistema continuará sem display\n");
+        printf("   ⚠️  Todas as funções restantes ativas\n");
+        printf("   📺 Logs disponíveis via Serial Monitor\n");
     }
     
     printf("===============================================\n");

@@ -116,6 +116,8 @@ void oled_log_mensagem(const char* msg);
 void oled_teste_orientacao(void);
 void oled_set_orientacao_manual(int orientacao);
 void oled_teste_conectividade(void);  // Nova função para diagnóstico
+// Variável de estado do display (definida em hydrosense_oled.c)
+extern bool ssd1306_init_done;
 // Novas funções de teste visual detalhado
 void oled_teste_tela_branca(void);
 void oled_teste_padrao_xadrez(void);
@@ -124,6 +126,40 @@ void oled_teste_contraste(void);
 void oled_teste_inversao(void);
 void oled_verificar_hardware(void);
 void oled_diagnostico_completo(void);  // Diagnóstico completo com checklist
+
+// Funções específicas de display OLED
+void oled_display_umidade(const hydrosense_status_t* data);
+void oled_display_tds(const hydrosense_status_t* data);
+void oled_display_bomba_status(const hydrosense_status_t* data);
+void oled_display_sistema_status(const hydrosense_status_t* data);
+
+// Novas funções para exibição detalhada das etapas
+void oled_tela_principal_tempo_real(const hydrosense_status_t* data);
+
+// Funções de alimentação
+void oled_alimentacao_manual_iniciada(void);
+void oled_alimentacao_servo_retornando(void);
+void oled_alimentacao_manual_concluida(void);
+void oled_alimentacao_programada_alerta(uint8_t hora, uint8_t quantidade);
+void oled_alimentacao_programada_executando(uint8_t hora, uint8_t porcao_atual, uint8_t total_porcoes);
+
+// Funções de TPA (Sistema de Troca Parcial de Água)
+void oled_tpa_bomba1_iniciando(void);
+void oled_tpa_bomba1_progresso(float nivel_atual, float meta);
+void oled_tpa_bomba1_meta_atingida(void);
+void oled_tpa_bomba2_iniciando(void);
+void oled_tpa_bomba2_progresso(float nivel_atual);
+void oled_tpa_bomba2_concluida(void);
+
+// Funções de menu aprimorado
+void oled_menu_principal(uint8_t item_selecionado);
+void oled_menu_sensores(const hydrosense_status_t* data);
+
+// Funções de alerta
+void oled_alerta_temperatura(float temp);
+void oled_alerta_ph(float ph);
+void oled_alerta_nivel_critico(float nivel);
+
 // Funções inspiradas na BitDogLab
 bool oled_init_bitdog_inspired(void);  // Método de inicialização BitDogLab
 bool oled_display_buffer_bitdog(void);  // Display buffer otimizado BitDogLab
@@ -137,6 +173,15 @@ void oled_test_i2c_speeds(void);  // Teste de diferentes velocidades I2C
 bool oled_init_simplificado_corrigido(void);  // Inicialização corrigida para I2C1
 void oled_scan_i2c1_addresses(void);  // Scan específico para I2C1
 bool oled_teste_definitivo_gp14_gp15(void);  // Teste definitivo para GP14/GP15
+// Funções FINAIS corrigidas
+bool oled_init_final_corrigido(void);  // FUNÇÃO FINAL - I2C1 exclusivo
+bool oled_teste_alto_contraste_visual(void);  // Teste visual extremo
+// FUNÇÕES DE CORREÇÃO DE ORIENTAÇÃO (PROBLEMA DO TEXTO DEITADO)
+bool oled_corrigir_orientacao_normal(void);  // Correção automática para orientação normal
+void oled_testar_orientacoes(void);  // Testa todas as 4 orientações possíveis
+void oled_aplicar_orientacao(int orientacao);  // Aplica orientação específica (1-4)
+bool oled_auto_corrigir_orientacao(void);  // Correção automática inteligente
+bool oled_corrigir_texto_deitado(void);  // Correção específica para texto deitado/rotacionado
 
 // Sensores
 float sensor_ler_temperatura(void);

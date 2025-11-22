@@ -232,7 +232,9 @@ void processar_botao_b(void) {
             orientacao_teste = (orientacao_teste + 1) % 4;
             
             printf("🔄 Testando orientação %d...\n", orientacao_teste);
-            oled_set_orientacao_manual(orientacao_teste);
+            
+            // Aplica a orientação usando a função correta (orientação 1-4)
+            oled_aplicar_orientacao(orientacao_teste + 1);
             
             // Também executa alimentação
             led_button_feedback('B', 500);

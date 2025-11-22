@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.13)
+
+# Inclui o SDK do Pico
+include(pico_sdk_import.cmake)
+
+project(display_diagnostico)
+
+# Inicializa o SDK do Pico
+pico_sdk_init()
+
+# Adiciona o executável
+add_executable(display_diagnostico
+    ../src/test_display_diagnostico.c
+)
+
+# Gera saída adicional
+pico_add_extra_outputs(display_diagnostico)
+
+# Liga as bibliotecas necessárias
+target_link_libraries(display_diagnostico
+    pico_stdlib
+    hardware_i2c
+    hardware_gpio
+)
+
+# Habilita saída USB para debug
+pico_enable_stdio_usb(display_diagnostico 1)
+pico_enable_stdio_uart(display_diagnostico 0)
+
+# Define configurações específicas
+target_compile_definitions(display_diagnostico PRIVATE
+    PICO_DEFAULT_I2C=1
+    PICO_DEFAULT_I2C_SDA_PIN=14
+    PICO_DEFAULT_I2C_SCL_PIN=15
+)

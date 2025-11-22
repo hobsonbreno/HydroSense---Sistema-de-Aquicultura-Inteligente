@@ -39,6 +39,7 @@ set(SOURCES
     src/hydrosense_botoes.c
     src/hydrosense_oled.c
     src/hydrosense_utils.c
+    src/oled_display.c
     src/tasks/feeding_task.c
     src/tasks/monitoring_task.c
     src/tasks/automation_task.c
