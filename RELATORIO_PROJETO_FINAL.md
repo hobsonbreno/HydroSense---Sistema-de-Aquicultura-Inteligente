@@ -121,12 +121,15 @@ O HydroSense é estruturado em três camadas:
 
 ### 5.2. Camada de Firmware
 
-- **Linguagem:** C (bare-metal)
+- **Linguagem:** C
 - **SDK:** Pico SDK 2.2.0
+- **RTOS:** FreeRTOS (kernel para RP2040) — escalonamento preemptivo, semáforos, filas
 - **Stack de Rede:** lwIP (Lightweight IP) em modo NO_SYS (polling)
 - **Protocolo WiFi:** WPA2-AES (com fallback para WPA2-MIXED e WPA-TKIP)
 - **Servidor HTTP:** TCP raw (porta 80) com callbacks `accept`, `recv` e `sent`
-- **Temporização:** Loop principal com polling de ~2 segundos (19 iterações de 100 ms com `cyw43_arch_poll()`)
+- **Watchdog:** Hardware watchdog (timeout 8s) para recuperação automática de travamentos
+- **RTC:** Real-Time Clock do RP2040 para controle de horários de alimentação
+- **Arquitetura de Tasks:** 3 tasks FreeRTOS concorrentes + loop principal com polling a cada 100 ms
 
 ### 5.3. Camada IoT / Aplicação Web
 
@@ -321,7 +324,27 @@ O backend serve como camada intermediária e fallback:
 
 ### 8.2. Estrutura do Loop Principal
 
-O firmware opera em **bare-metal** (sem RTOS na v10 final) com um loop principal que executa a cada ~2 segundos:
+O projeto possui duas arquiteturas complementares: o **build principal com FreeRTOS** (usando `hydrosense_main.c` + 3 tasks concorrentes) e o **firmware v10 WiFi** (usando `hydrosense_v10_final.c` com polling lwIP). O build principal utiliza o **FreeRTOS** com 3 tasks, mutex, filas e watchdog (ver seção 8.3). O firmware v10 WiFi opera com loop de polling a cada ~2 segundos para compatibilidade com a stack lwIP:
+
+**Build Principal (FreeRTOS — `hydrosense_main.c`):**
+
+```
+main() → hydrosense_init() → hydrosense_main_loop()
+    ├── watchdog_enable(8000)     → Watchdog 8s
+    ├── sensores_ler_todos()      → A cada 5s
+    ├── oled_mostrar_tela()       → A cada 1s
+    ├── botoes_processar()        → A cada 100ms
+    ├── neopixel_show_status()    → A cada 2s
+    ├── alimentacao_verificar()   → Contínuo
+    └── tpa_verificar()           → Contínuo
+
+    Tasks FreeRTOS (concorrentes):
+    ├── monitoring_task  (10s) → Sensores + Alertas
+    ├── automation_task  (10s) → Controle nível + TPA
+    └── feeding_task     (1s)  → Alimentação + RTC
+```
+
+**Firmware v10 WiFi (polling lwIP — `hydrosense_v10_final.c`):**
 
 ```
 main() {
@@ -346,7 +369,132 @@ main() {
 }
 ```
 
-### 8.3. Sensores — Detalhamento
+### 8.3. FreeRTOS — Configuração e Tasks
+
+O projeto utiliza o **FreeRTOS** como sistema operacional de tempo real, compilado especificamente para o **RP2040** (porta `GCC_RP2040`). O kernel é linkado ao projeto via o `CMakeLists.txt` principal e configurado através do arquivo `FreeRTOSConfig.h`.
+
+#### 8.3.1. Configuração do FreeRTOS (`FreeRTOSConfig.h`)
+
+| Parâmetro | Valor | Descrição |
+|---|---|---|
+| `configUSE_PREEMPTION` | 1 | Escalonamento preemptivo habilitado |
+| `configCPU_CLOCK_HZ` | 133 MHz | Clock do RP2040 |
+| `configTICK_RATE_HZ` | 1000 | Resolução de 1 ms por tick |
+| `configMAX_PRIORITIES` | 32 | Até 32 níveis de prioridade |
+| `configTOTAL_HEAP_SIZE` | 128 KB | Heap dinâmico para alocação de tasks |
+| `configUSE_MUTEXES` | 1 | Semáforos mutex para proteção de dados compartilhados |
+| `configUSE_COUNTING_SEMAPHORES` | 1 | Semáforos contadores habilitados |
+| `configUSE_TIMERS` | 1 | Software timers habilitados |
+| `configUSE_RECURSIVE_MUTEXES` | 1 | Mutex recursivos habilitados |
+| `configMINIMAL_STACK_SIZE` | 128 words | Stack mínima por task |
+
+#### 8.3.2. Tasks FreeRTOS do Sistema
+
+O HydroSense utiliza **3 tasks FreeRTOS concorrentes**, cada uma com responsabilidade específica, comunicando-se por **semáforos mutex** (`system_data_mutex`) e **filas** (`alert_queue`):
+
+| Task | Arquivo | Período | Função Principal |
+|---|---|---|---|
+| `monitoring_task` | `src/tasks/monitoring_task.c` | 10 s (`MONITORING_INTERVAL`) | Leitura periódica de sensores, verificação de alertas, atualização de uptime |
+| `automation_task` | `src/tasks/automation_task.c` | 10 s (`AUTOMATION_INTERVAL`) | Controle automático de nível de água, execução de TPA, processamento de alertas |
+| `feeding_task` | `src/tasks/feeding_task.c` | 1 s | Verificação de horários programados (00:00, 08:00, 16:00), alimentação manual via botão B |
+
+#### 8.3.3. Task de Monitoramento (`monitoring_task`)
+
+```c
+void monitoring_task(void *pvParameters) {
+    // Inicializa sensores (temp, pH, turbidez, nível)
+    // Loop com vTaskDelayUntil (período preciso de 10s):
+    //   1. Lê todos os sensores (read_all_sensors)
+    //   2. Verifica alertas (check_alerts)
+    //   3. Atualiza uptime do sistema
+    //   4. Exibe status no console serial
+}
+```
+
+Esta task utiliza `vTaskDelayUntil()` para garantir periodicidade precisa, independente do tempo de execução das leituras. Protege os dados compartilhados com `xSemaphoreTake(system_data_mutex)` ao acessar a estrutura `SystemStatus_t`.
+
+#### 8.3.4. Task de Automação (`automation_task`)
+
+```c
+void automation_task(void *pvParameters) {
+    // Inicializa controlador de bombas
+    // Loop com vTaskDelayUntil (período de 10s):
+    //   1. Controle de nível de água (liga/desliga bomba 2)
+    //   2. Verifica necessidade de TPA
+    //   3. Processa alertas da fila (xQueueReceive)
+    //      - pH fora da faixa → TPA necessária
+    //      - Turbidez alta → TPA necessária
+    //      - Nível crítico → Alerta
+    //      - Temperatura fora da faixa → Alerta
+}
+```
+
+Esta task consome alertas da `alert_queue` (fila FreeRTOS) produzidos pela task de monitoramento, implementando um padrão **produtor-consumidor** para comunicação inter-task.
+
+#### 8.3.5. Task de Alimentação (`feeding_task`)
+
+```c
+void feeding_task(void *pvParameters) {
+    // Loop a cada 1 segundo (vTaskDelay):
+    //   1. Verifica botão B para alimentação manual
+    //   2. Consulta RTC para horários programados
+    //   3. Se horário == 00:00, 08:00 ou 16:00:
+    //      - Aciona servo (servo_feed_fish)
+    //      - Atualiza contadores via mutex
+    //      - Registra último horário de alimentação
+}
+```
+
+Esta task roda com período de **1 segundo** para garantir que nenhum horário programado seja perdido. Utiliza o **RTC (Real-Time Clock)** do RP2040 para comparação de horários e o mutex `system_data_mutex` para atualizar o timestamp da última alimentação de forma thread-safe.
+
+#### 8.3.6. Mecanismos de Sincronização
+
+| Mecanismo | Tipo FreeRTOS | Uso no HydroSense |
+|---|---|---|
+| `system_data_mutex` | `SemaphoreHandle_t` (Mutex) | Protege acesso concorrente à estrutura `SystemStatus_t` compartilhada entre as 3 tasks |
+| `alert_queue` | `QueueHandle_t` (Fila) | Comunicação produtor-consumidor: monitoring gera alertas, automation os consome e atua |
+| `vTaskDelayUntil` | Delay preciso | Garante periodicidade exata nas tasks de monitoramento e automação |
+| `vTaskDelay` | Delay simples | Usado na feeding_task para verificação a cada 1 segundo |
+
+#### 8.3.7. Diagrama de Concorrência das Tasks
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    FreeRTOS Kernel                       │
+│              (Preemptivo, 1ms tick, 133MHz)              │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ monitoring   │  │ automation   │  │  feeding     │   │
+│  │    task      │  │    task      │  │    task      │   │
+│  │  (10s loop)  │  │  (10s loop)  │  │  (1s loop)   │   │
+│  │              │  │              │  │              │   │
+│  │ • Lê sensores│  │ • Ctrl nível │  │ • Verifica   │   │
+│  │ • Gera       │  │ • Executa TPA│  │   horários   │   │
+│  │   alertas    │──│ • Consome    │  │ • Servo feed │   │
+│  │ • Uptime     │  │   alertas    │  │ • Botão B    │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
+│         │                 │                 │           │
+│         └────────┬────────┘                 │           │
+│                  │                          │           │
+│         ┌────────▼────────┐        ┌────────▼────────┐  │
+│         │  alert_queue    │        │ system_data     │  │
+│         │  (Fila)         │        │   _mutex        │  │
+│         └─────────────────┘        └─────────────────┘  │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  Loop Principal (hydrosense_main_loop):                  │
+│  • Watchdog update (8s)  • Sensores (5s)                │
+│  • OLED update (1s)      • Botões (100ms)               │
+│  • NeoPixel status (2s)  • Console (30s)                │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 8.3.8. Watchdog Timer
+
+O sistema implementa um **hardware watchdog** com timeout de **8 segundos**. O loop principal chama `watchdog_update()` a cada iteração (100 ms). Se o sistema travar por qualquer motivo (deadlock entre tasks, falha de hardware, etc.), o watchdog reinicia automaticamente o microcontrolador, garantindo **alta disponibilidade** do sistema. Na reinicialização, o firmware detecta se foi um reboot por watchdog via `watchdog_caused_reboot()` e emite um alerta.
+
+### 8.4. Sensores — Detalhamento
 
 #### 8.3.1. AHT10 — Sensor de Temperatura e Umidade
 
@@ -370,7 +518,7 @@ main() {
 | Cálculo de Nível | `nível(%) = (TANK_HEIGHT - distância) / TANK_HEIGHT × 100` |
 | Cálculo de Volume | `volume(L) = nível(%) / 100 × TANK_CAPACITY (20L)` |
 
-### 8.4. Atuadores — Detalhamento
+### 8.5. Atuadores — Detalhamento
 
 #### 8.4.1. Servo Motor SG90
 
@@ -391,7 +539,7 @@ main() {
 | LN2 | 18 | Bomba TPA — Esvaziar | Manual via interface web |
 | LN3 | 19 | Bomba TPA — Encher | Manual via interface web |
 
-### 8.5. Protocolos de Comunicação
+### 8.6. Protocolos de Comunicação
 
 | Protocolo | Uso no HydroSense | Detalhes |
 |---|---|---|
@@ -403,7 +551,7 @@ main() {
 | **JSON** | Formato de dados da API | Sensores, relés, status do sistema |
 | **GPIO** | Controle de LED, buzzer, relés | Saídas digitais diretas |
 
-### 8.6. Endpoints HTTP do Pico W
+### 8.7. Endpoints HTTP do Pico W
 
 | Método | Rota | Descrição | Resposta |
 |---|---|---|---|
@@ -514,7 +662,7 @@ O projeto **HydroSense** atingiu com êxito todos os objetivos propostos, result
 
 Os principais resultados alcançados foram:
 
-1. **Integração completa de hardware e firmware** — Sensores AHT10 e VL53L0X, display OLED, servo motor, relés, LED RGB e buzzer operando de forma coordenada em um único microcontrolador (RP2040).
+1. **Integração completa de hardware e firmware** — Sensores AHT10 e VL53L0X, display OLED, servo motor, relés, LED RGB e buzzer operando de forma coordenada em um único microcontrolador (RP2040), com **FreeRTOS** gerenciando 3 tasks concorrentes (monitoramento, automação e alimentação) via semáforos mutex e filas para comunicação inter-task.
 
 2. **Conectividade IoT funcional** — Servidor HTTP embarcado no Pico W com API REST JSON, possibilitando monitoramento e controle remotos via rede WiFi.
 
@@ -529,7 +677,7 @@ Como **trabalhos futuros**, o sistema pode ser expandido com:
 - Protocolo MQTT para integração com plataformas de nuvem (AWS IoT, ThingsBoard)
 - Armazenamento de histórico de dados em cartão SD ou banco de dados remoto
 - Sistema de alertas via Telegram/WhatsApp
-- Migração para FreeRTOS com tarefas concorrentes para maior responsividade
+- Unificação do FreeRTOS com a stack WiFi/lwIP em um único firmware, integrando as tasks concorrentes com o servidor HTTP embarcado
 
 O HydroSense comprova que é possível desenvolver soluções IoT robustas e funcionais para o agronegócio utilizando plataformas de baixo custo e ferramentas open source, contribuindo para a democratização da tecnologia na aquicultura brasileira.
 
@@ -572,16 +720,36 @@ O HydroSense comprova que é possível desenvolver soluções IoT robustas e fun
 ```
 HydroSense/
 ├── src/
-│   └── hydrosense_v10_final.c    # Firmware final (985 linhas)
+│   ├── hydrosense_v10_final.c    # Firmware WiFi final (985 linhas)
+│   ├── hydrosense_main.c         # Main com FreeRTOS (307 linhas)
+│   ├── hydrosense_servo.c        # Driver servo motor
+│   ├── hydrosense_oled.c         # Driver display OLED
+│   ├── hydrosense_utils.c        # Funções utilitárias
+│   ├── hydrosense_botoes.c       # Processamento de botões
+│   ├── config/
+│   │   └── system_config.c       # Configuração do sistema
+│   └── tasks/
+│       ├── feeding_task.c        # Task FreeRTOS — Alimentação (RTC + servo)
+│       ├── monitoring_task.c     # Task FreeRTOS — Monitoramento de sensores
+│       └── automation_task.c     # Task FreeRTOS — Automação (TPA + nível)
 ├── include/
-│   └── lwipopts.h                # Configuração lwIP otimizada
+│   ├── hydrosense_system.h       # Defines, structs, estados do sistema
+│   ├── lwipopts.h                # Configuração lwIP otimizada
+│   ├── tasks/
+│   │   ├── feeding_task.h
+│   │   ├── monitoring_task.h
+│   │   └── automation_task.h
+│   └── sensors/
+│       ├── aht10.h               # Driver sensor temp/umidade
+│       └── vl53l0x.h             # Driver sensor distância
+├── FreeRTOS-Kernel/              # Kernel FreeRTOS (porta GCC_RP2040)
 ├── frontend/
 │   └── index.html                # Dashboard web completo (818 linhas)
 ├── simple-backend.js             # Backend Node.js Express (217 linhas)
-├── CMakeLists.txt                # Build system CMake
-├── FreeRTOSConfig.h              # Configuração FreeRTOS
+├── CMakeLists.txt                # Build system CMake (c/ FreeRTOS)
+├── FreeRTOSConfig.h              # Configuração FreeRTOS (128KB heap, preemptivo)
 ├── pico_sdk_import.cmake         # Importação Pico SDK
-├── start.sh                      # Script inicialização (1 comando)
+├── start.sh                      # Script inicialização
 ├── stop.sh                       # Script encerramento limpo
 └── README.md                     # Documentação do projeto
 ```
