@@ -1,0 +1,42 @@
+# Teste mínimo Wi-Fi HydroSense
+cmake_minimum_required(VERSION 3.13)
+
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.2.0)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.2.0)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+
+include(pico_sdk_import.cmake)
+
+set(PICO_BOARD pico_w)
+project(test_wifi C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+
+pico_sdk_init()
+
+add_executable(test_wifi
+    src/test_wifi_dhcp.c
+)
+
+target_include_directories(test_wifi PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(test_wifi
+    pico_stdlib
+    pico_cyw43_arch_lwip_poll
+    hardware_gpio
+)
+
+pico_enable_stdio_usb(test_wifi 1)
+pico_enable_stdio_uart(test_wifi 0)
+
+pico_add_extra_outputs(test_wifi)

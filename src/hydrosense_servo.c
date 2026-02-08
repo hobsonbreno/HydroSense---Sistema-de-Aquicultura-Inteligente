@@ -118,8 +118,11 @@ void servo_alimentar_peixes(const char* origem) {
     printf("✅ Alimentação concluída!\n");
     printf("📊 500g de ração dispensados com sucesso\n");
     
-    // Atualiza timestamp da última alimentação
+    // Atualiza timestamp e contador de alimentações
     system_status.ultimo_feeding = get_timestamp_ms();
+    system_status.alimentacoes_hoje++;
+    
+    printf("🍽️ Alimentações hoje: %d\n", system_status.alimentacoes_hoje);
 }
 
 void servo_teste_movimento(void) {
@@ -141,13 +144,14 @@ void alimentacao_verificar_horarios(void) {
     datetime_t dt;
     rtc_get_datetime(&dt);
     
-    // Reset diário dos horários executados
+    // Reset diário dos horários executados e contador
     if (dt.day != dia_anterior) {
         for (int i = 0; i < FEED_HOURS_COUNT; i++) {
             horarios_executados[i] = false;
         }
         dia_anterior = dt.day;
-        printf("🔄 Reset diário dos horários de alimentação\n");
+        system_status.alimentacoes_hoje = 0;  // Reset do contador diário
+        printf("🔄 Novo dia - Reset dos horários e contador de alimentação\n");
     }
     
     // Verifica se é hora de alimentar
@@ -155,8 +159,9 @@ void alimentacao_verificar_horarios(void) {
         for (int i = 0; i < FEED_HOURS_COUNT; i++) {
             if (dt.hour == FEED_HOURS[i] && !horarios_executados[i]) {
                 horarios_executados[i] = true;
-                char origem[32];
-                snprintf(origem, sizeof(origem), "PROGRAMADO %02d:00", dt.hour);
+                char origem[48];
+                snprintf(origem, sizeof(origem), "⏰ PROGRAMADO %02d:00 (#%d do dia)", 
+                        dt.hour, system_status.alimentacoes_hoje + 1);
                 servo_alimentar_peixes(origem);
                 return;
             }

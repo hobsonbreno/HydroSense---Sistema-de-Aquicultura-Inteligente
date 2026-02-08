@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: hydrosense-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: hydro
+      MONGO_INITDB_ROOT_PASSWORD: sense2026
+      MONGO_INITDB_DATABASE: hydrosense
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d
+    networks:
+      - hydrosense-network
+
+  # Backend NestJS
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hydrosense-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://hydro:sense2026@mongodb:27017/hydrosense?authSource=admin
+      - JWT_SECRET=hydrosense_jwt_secret_key_2026
+      - PICO_W_IP=10.0.0.181
+    depends_on:
+      - mongodb
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - hydrosense-network
+
+  # Frontend (Future)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hydrosense-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    depends_on:
+      - backend
+    networks:
+      - hydrosense-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: hydrosense-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - hydrosense-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  hydrosense-network:
+    driver: bridge

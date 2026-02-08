@@ -1,0 +1,118 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.2.0)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.2.0)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
+cmake_minimum_required(VERSION 3.13)
+
+# Importa o Pico SDK
+include(pico_sdk_import.cmake)
+
+# Define a placa como Pico W
+set(PICO_BOARD pico_w)
+
+project(HydroSense_v3 C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+# Inicializa o Pico SDK
+pico_sdk_init()
+
+# Configura o FreeRTOS para RP2040
+set(FREERTOS_CONFIG_FILE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} CACHE STRING "")
+set(FREERTOS_PORT GCC_RP2040 CACHE STRING "")
+
+# Adiciona o FreeRTOS
+add_subdirectory(FreeRTOS-Kernel)
+
+# ============================================================
+# HydroSense v3.0 - Arquivos fonte
+# ============================================================
+set(SOURCES
+    # Main
+    src/main_v3.c
+    
+    # Sensores
+    src/sensors/vl53l0x.c
+    src/sensors/aht10.c
+    src/sensors/tcs3200.c
+    
+    # Sistemas
+    src/tpa_system.c
+    src/feeding_system.c
+    src/webserver_v2.c
+    src/dhcpserver.c
+    src/log_system.c
+)
+
+# Adiciona o executável
+add_executable(HydroSense_v3 ${SOURCES})
+
+# Definições de compilação
+target_compile_definitions(HydroSense_v3 PRIVATE
+    PICO_STACK_SIZE=0x1000
+    PICO_CORE1_STACK_SIZE=0x800
+    PICO_HEAP_SIZE=0x8000
+    CYW43_HOST_NAME="HydroSense"
+    PICO_CYW43_ARCH_THREADSAFE_BACKGROUND=1
+)
+
+# Inclui diretórios de header
+target_include_directories(HydroSense_v3 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/sensors
+    ${CMAKE_CURRENT_SOURCE_DIR}/arch
+    ${CMAKE_CURRENT_SOURCE_DIR}/FreeRTOS-Kernel/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/include
+)
+
+# Bibliotecas necessárias
+target_link_libraries(HydroSense_v3
+    # Pico SDK
+    pico_stdlib
+    pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_http
+    pico_multicore
+    
+    # Hardware
+    hardware_pwm
+    hardware_adc
+    hardware_i2c
+    hardware_gpio
+    hardware_uart
+    hardware_rtc
+    hardware_timer
+    hardware_watchdog
+    
+    # FreeRTOS
+    freertos_kernel
+)
+
+# Habilita USB e UART para debug
+pico_enable_stdio_usb(HydroSense_v3 1)
+pico_enable_stdio_uart(HydroSense_v3 0)
+
+# Cria arquivo UF2 e outros formatos
+pico_add_extra_outputs(HydroSense_v3)
+
+# Informação de build
+message(STATUS "")
+message(STATUS "╔══════════════════════════════════════════════════════════════╗")
+message(STATUS "║  HydroSense v3.0 - Sistema de Aquicultura + Hidroponia       ║")
+message(STATUS "╠══════════════════════════════════════════════════════════════╣")
+message(STATUS "║  📊 Sensores: VL53L0X, AHT10, TCS3200                         ║")
+message(STATUS "║  🐟 Alimentação: 08:00 e 16:00 (50g)                          ║")
+message(STATUS "║  🚰 TPA: Sujeira (25%) + Rotatividade (50%/2h)                ║")
+message(STATUS "║  🌐 Dashboard: HTTP em 192.168.4.1                            ║")
+message(STATUS "╚══════════════════════════════════════════════════════════════╝")
+message(STATUS "")

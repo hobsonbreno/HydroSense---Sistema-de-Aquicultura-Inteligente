@@ -1,5 +1,6 @@
 # Build directories
 build/
+build_*/
 **/build/
 
 # CMake generated files
@@ -54,6 +55,13 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Node.js
+node_modules/
+
+# PID files
+.hydrosense.pid
+.hydrosense.log
 
 # FreeRTOS build artifacts (keep source)
 FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/build/

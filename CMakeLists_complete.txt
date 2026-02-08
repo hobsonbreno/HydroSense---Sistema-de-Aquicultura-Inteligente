@@ -1,0 +1,49 @@
+cmake_minimum_required(VERSION 3.13)
+
+# Configuração do SDK
+set(PICO_BOARD pico_w CACHE STRING "Board type")
+set(PICO_SDK_PATH "$ENV{HOME}/.pico-sdk/sdk/2.1.1")
+
+include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
+
+project(hydrosense_complete C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+pico_sdk_init()
+
+# Executável
+add_executable(hydrosense_complete
+    src/hydrosense_complete.c
+)
+
+# Includes
+target_include_directories(hydrosense_complete PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/include
+)
+
+# lwIP options
+target_compile_definitions(hydrosense_complete PRIVATE
+    PICO_CYW43_ARCH_POLL=1
+    LWIP_PROVIDE_ERRNO=1
+    CYW43_HOST_NAME="HydroSense"
+)
+
+# Bibliotecas
+target_link_libraries(hydrosense_complete
+    pico_stdlib
+    pico_cyw43_arch_lwip_poll
+    hardware_i2c
+    hardware_gpio
+    hardware_pwm
+    hardware_adc
+    hardware_rtc
+)
+
+# Output USB e UART
+pico_enable_stdio_usb(hydrosense_complete 1)
+pico_enable_stdio_uart(hydrosense_complete 0)
+
+# Gerar UF2
+pico_add_extra_outputs(hydrosense_complete)

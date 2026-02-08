@@ -10,7 +10,7 @@ pico_sdk_init()
 
 # Adiciona o executável
 add_executable(display_diagnostico
-    ../src/test_display_diagnostico.c
+    ../src/diagnostico_v2.c
 )
 
 # Gera saída adicional
@@ -21,15 +21,16 @@ target_link_libraries(display_diagnostico
     pico_stdlib
     hardware_i2c
     hardware_gpio
+    hardware_pwm
 )
 
 # Habilita saída USB para debug
 pico_enable_stdio_usb(display_diagnostico 1)
 pico_enable_stdio_uart(display_diagnostico 0)
 
-# Define configurações específicas
+# Define configurações específicas - GPIO2/GPIO3 para o extensor I2C
 target_compile_definitions(display_diagnostico PRIVATE
     PICO_DEFAULT_I2C=1
-    PICO_DEFAULT_I2C_SDA_PIN=14
-    PICO_DEFAULT_I2C_SCL_PIN=15
+    PICO_DEFAULT_I2C_SDA_PIN=2
+    PICO_DEFAULT_I2C_SCL_PIN=3
 )

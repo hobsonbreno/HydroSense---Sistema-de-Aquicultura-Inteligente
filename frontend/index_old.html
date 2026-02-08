@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HydroSense - Sistema de Automação</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #f0f8ff;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        .sensor-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+        }
+
+        .sensor-label {
+            font-weight: bold;
+            color: #b8d4f0;
+        }
+
+        .sensor-value {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background-color: #4CAF50;
+        }
+
+        .status-offline {
+            background-color: #f44336;
+        }
+
+        .relay-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .relay-card {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .relay-card.active {
+            border-color: #4CAF50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+
+        .relay-button {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 10px;
+        }
+
+        .relay-button.on {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .relay-button.off {
+            background: #f44336;
+            color: white;
+        }
+
+        .relay-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .feeding-section {
+            text-align: center;
+        }
+
+        .feed-button {
+            background: linear-gradient(45deg, #FF6B6B, #4ECDC4);
+            color: white;
+            border: none;
+            padding: 20px 40px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 15px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+
+        .feed-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 12px 35px rgba(0,0,0,0.3);
+        }
+
+        .automation-controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+
+        .automation-toggle {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #4CAF50;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        .water-level-bar {
+            width: 100%;
+            height: 30px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .water-level-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #2196F3);
+            transition: width 0.5s ease;
+            border-radius: 15px;
+        }
+
+        .last-update {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌊 HydroSense</h1>
+            <p>Sistema Inteligente de Automação de Aquário</p>
+        </div>
+
+        <div class="grid">
+            <!-- Sensores -->
+            <div class="card">
+                <h2>📊 Sensores</h2>
+                <div class="sensor-item">
+                    <span class="sensor-label">🌡️ Temperatura:</span>
+                    <span class="sensor-value" id="temperatura">--°C</span>
+                </div>
+                <div class="sensor-item">
+                    <span class="sensor-label">💧 Umidade:</span>
+                    <span class="sensor-value" id="umidade">--%</span>
+                </div>
+                <div class="sensor-item">
+                    <span class="sensor-label">📏 Distância:</span>
+                    <span class="sensor-value" id="distancia">--mm</span>
+                </div>
+                <div class="sensor-item">
+                    <span class="sensor-label">🌊 Nível da Água:</span>
+                    <span class="sensor-value" id="nivel">--%</span>
+                </div>
+                <div class="water-level-bar">
+                    <div class="water-level-fill" id="nivelBar" style="width: 0%"></div>
+                </div>
+                <div class="sensor-item">
+                    <span class="sensor-label">🎨 Cor da Água:</span>
+                    <span class="sensor-value" id="corAgua">--</span>
+                </div>
+                <div class="sensor-item">
+                    <span class="sensor-label">🌐 WiFi:</span>
+                    <span class="sensor-value">
+                        <span class="status-indicator" id="wifiStatus"></span>
+                        <span id="wifiText">Desconectado</span>
+                    </span>
+                </div>
+            </div>
+
+            <!-- Controle de Relés -->
+            <div class="card">
+                <h2>⚡ Controle de Relés</h2>
+                <div class="relay-controls">
+                    <div class="relay-card" id="relay-ln1">
+                        <h3>🌪️ Ventilador</h3>
+                        <p>Motor LN1</p>
+                        <button class="relay-button off" onclick="toggleRelay('LN1', 14)">DESLIGADO</button>
+                    </div>
+                    <div class="relay-card" id="relay-ln2">
+                        <h3>⬇️ Bomba Esvaziar</h3>
+                        <p>Bomba LN2</p>
+                        <button class="relay-button off" onclick="toggleRelay('LN2', 15)">DESLIGADO</button>
+                    </div>
+                    <div class="relay-card" id="relay-ln3">
+                        <h3>⬆️ Bomba Encher</h3>
+                        <p>Bomba LN3</p>
+                        <button class="relay-button off" onclick="toggleRelay('LN3', 16)">DESLIGADO</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sistema de Alimentação -->
+            <div class="card">
+                <h2>🐟 Sistema de Alimentação</h2>
+                <div class="feeding-section">
+                    <p style="margin-bottom: 20px;">Horários automáticos: <strong>08:00</strong> e <strong>16:00</strong></p>
+                    <button class="feed-button" onclick="manualFeeding()">🍽️ Alimentar Agora</button>
+                    <div class="sensor-item">
+                        <span class="sensor-label">⏰ Próxima Alimentação:</span>
+                        <span class="sensor-value" id="nextFeeding">Carregando...</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">📅 Alimentações Hoje:</span>
+                        <span class="sensor-value" id="todayFeedings">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Automações -->
+            <div class="card">
+                <h2>🤖 Automações</h2>
+                <div class="automation-controls">
+                    <div class="automation-toggle">
+                        <span>🌡️ Controle de Temperatura</span>
+                        <label class="switch">
+                            <input type="checkbox" id="tempControl" onchange="toggleAutomation('temperature', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="automation-toggle">
+                        <span>💧 Qualidade da Água</span>
+                        <label class="switch">
+                            <input type="checkbox" id="waterQualityControl" onchange="toggleAutomation('water-quality', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="automation-toggle">
+                        <span>📊 Nível da Água</span>
+                        <label class="switch">
+                            <input type="checkbox" id="waterLevelControl" onchange="toggleAutomation('water-level', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="automation-toggle">
+                        <span>🍽️ Alimentação Automática</span>
+                        <label class="switch">
+                            <input type="checkbox" id="feedingControl" onchange="toggleFeeding(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div style="text-align: center; margin-top: 20px;">
+                    <button class="feed-button" onclick="manualWaterCycle()" style="background: linear-gradient(45deg, #3498db, #2ecc71);">
+                        🔄 Ciclo Manual de Água
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="last-update">
+            <p id="lastUpdate">Última atualização: --:--:--</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        const PICO_IP = '10.0.0.181';
+        
+        let relayStates = {
+            LN1: false,
+            LN2: false,
+            LN3: false
+        };
+
+        // Atualizar dados a cada 3 segundos
+        setInterval(updateData, 3000);
+        
+        // Primeira atualização
+        updateData();
+        loadAutomationStatus();
+        loadFeedingStatus();
+
+        async function updateData() {
+            try {
+                // PRIORIDADE 1: Buscar dados reais do Pico W
+                try {
+                    const picoResponse = await fetch(`http://${PICO_IP}/sensors`);
+                    if (picoResponse.ok) {
+                        const data = await picoResponse.json();
+                        updateSensorDisplay(data);
+                        console.log('✅ Dados REAIS do Pico W:', data);
+                        return; // Usar dados reais e sair
+                    }
+                } catch (picoError) {
+                    console.warn('⚠️ Pico W não disponível, usando backend simulado');
+                }
+                
+                // FALLBACK: Usar backend simulado se Pico W não responder
+                const backendResponse = await fetch(`${API_BASE}/sensors`);
+                if (backendResponse.ok) {
+                    const data = await backendResponse.json();
+                    updateSensorDisplay(data);
+                    console.log('📊 Dados SIMULADOS do backend:', data);
+                }
+                
+                // Buscar status dos relés do backend
+                const relayResponse = await fetch(`${API_BASE}/relays/status`);
+                if (relayResponse.ok) {
+                    const relayData = await relayResponse.json();
+                    updateRelayStatus(relayData);
+                }
+
+            } catch (error) {
+                console.error('❌ Erro ao atualizar dados:', error);
+                // Mostrar status offline
+                const wifiStatus = document.getElementById('wifiStatus');
+                const wifiText = document.getElementById('wifiText');
+                wifiStatus.className = 'status-indicator status-offline';
+                wifiText.textContent = 'Sistema Offline';
+            }
+        }
+
+        function updateSensorDisplay(data) {
+            // Detectar se são dados do Pico W ou Backend
+            const isPicoData = data.wifiStatus !== undefined && !data.sensors;
+            const isBackendData = data.sensors !== undefined;
+            
+            let sensors;
+            if (isPicoData) {
+                // Dados diretos do Pico W
+                sensors = data;
+                console.log('🔗 Usando dados REAIS do Pico W');
+            } else if (isBackendData) {
+                // Dados do backend (simulados)
+                sensors = data.sensors;
+                console.log('🖥️ Usando dados SIMULADOS do backend');
+            } else {
+                // Fallback para estrutura direta
+                sensors = data;
+            }
+            
+            document.getElementById('temperatura').textContent = `${sensors.temperatura.toFixed(1)}°C`;
+            document.getElementById('umidade').textContent = `${sensors.umidade.toFixed(1)}%`;
+            document.getElementById('distancia').textContent = `${sensors.distancia || sensors.distancia_mm}mm`;
+            document.getElementById('nivel').textContent = `${sensors.nivel || sensors.nivel_agua_percent || 0}%`;
+            document.getElementById('corAgua').textContent = sensors.corAgua || sensors.cor_agua || 'N/A';
+            
+            // Atualizar barra de nível
+            const nivel = sensors.nivel || sensors.nivel_agua_percent || 0;
+            document.getElementById('nivelBar').style.width = `${nivel}%`;
+            
+            // Atualizar status WiFi
+            const wifiStatus = document.getElementById('wifiStatus');
+            const wifiText = document.getElementById('wifiText');
+            
+            if (isPicoData && sensors.wifiStatus) {
+                wifiStatus.className = 'status-indicator status-online';
+                wifiText.textContent = 'Pico W Conectado';
+            } else if (isBackendData) {
+                wifiStatus.className = 'status-indicator status-online';
+                wifiText.textContent = 'Backend Simulado';
+            } else {
+                wifiStatus.className = 'status-indicator status-offline';
+                wifiText.textContent = 'Offline';
+            }
+            
+            // Atualizar timestamp
+            document.getElementById('lastUpdate').textContent = 
+                `Última atualização: ${new Date().toLocaleTimeString('pt-BR')}`;
+        }
+
+        function updateRelayStatus(data) {
+            if (data.relays) {
+                updateRelayButton('LN1', data.relays.LN1.estado);
+                updateRelayButton('LN2', data.relays.LN2.estado);
+                updateRelayButton('LN3', data.relays.LN3.estado);
+            }
+        }
+
+        function updateRelayButton(type, state) {
+            const button = document.querySelector(`#relay-${type.toLowerCase()} .relay-button`);
+            const card = document.getElementById(`relay-${type.toLowerCase()}`);
+            
+            relayStates[type] = state;
+            
+            if (state) {
+                button.textContent = 'LIGADO';
+                button.className = 'relay-button on';
+                card.classList.add('active');
+            } else {
+                button.textContent = 'DESLIGADO';
+                button.className = 'relay-button off';
+                card.classList.remove('active');
+            }
+        }
+
+        async function toggleRelay(type, pin) {
+            try {
+                const newState = !relayStates[type];
+                
+                // PRIORIDADE 1: Tentar controlar diretamente no Pico W
+                try {
+                    const picoResponse = await fetch(`http://${PICO_IP}/relay`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            relay: type, 
+                            state: newState 
+                        })
+                    });
+                    
+                    if (picoResponse.ok) {
+                        updateRelayButton(type, newState);
+                        console.log(`✅ Relé ${type} ${newState ? 'ligado' : 'desligado'} no PICO W`);
+                        return;
+                    }
+                } catch (picoError) {
+                    console.warn(`⚠️ Pico W não disponível para relé ${type}, usando backend`);
+                }
+                
+                // FALLBACK: Controlar via backend se Pico W falhar
+                const response = await fetch(`${API_BASE}/relays/control`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tipo: type,
+                        estado: newState,
+                        origem: 'manual',
+                        observacao: `Controle manual via interface web`
+                    })
+                });
+
+                if (response.ok) {
+                    updateRelayButton(type, newState);
+                    console.log(`📊 Relé ${type} ${newState ? 'ligado' : 'desligado'} no BACKEND`);
+                }
+            } catch (error) {
+                console.error('Erro ao controlar relé:', error);
+                alert('Erro ao controlar relé. Verifique a conexão.');
+            }
+        }
+
+        async function manualFeeding() {
+            try {
+                // PRIORIDADE 1: Executar servo no Pico W
+                try {
+                    const picoResponse = await fetch(`http://${PICO_IP}/servo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    if (picoResponse.ok) {
+                        alert('✅ Alimentação executada com sucesso no PICO W! 🐟');
+                        console.log('🤖 Servo motor acionado no Pico W');
+                        loadFeedingStatus();
+                        return;
+                    }
+                } catch (picoError) {
+                    console.warn('⚠️ Pico W não disponível para servo, usando backend simulado');
+                }
+                
+                // FALLBACK: Simular no backend
+                const response = await fetch(`${API_BASE}/feeding/manual`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        observacao: 'Alimentação manual via interface web'
+                    })
+                });
+
+                if (response.ok) {
+                    alert('📊 Alimentação simulada no backend! 🐟');
+                    loadFeedingStatus(); // Atualizar status
+                } else {
+                    alert('❌ Erro ao executar alimentação');
+                }
+            } catch (error) {
+                console.error('Erro na alimentação:', error);
+                alert('Erro ao executar alimentação. Verifique a conexão.');
+            }
+        }
+
+        async function loadAutomationStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/automation/status`);
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('tempControl').checked = data.temperatureControl;
+                    document.getElementById('waterQualityControl').checked = data.waterQualityControl;
+                    document.getElementById('waterLevelControl').checked = data.waterLevelControl;
+                }
+            } catch (error) {
+                console.error('Erro ao carregar status das automações:', error);
+            }
+        }
+
+        async function loadFeedingStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/feeding/status`);
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('feedingControl').checked = data.active;
+                    document.getElementById('nextFeeding').textContent = data.nextScheduled.timeUntilNext;
+                    document.getElementById('todayFeedings').textContent = data.todayFeedings.length;
+                }
+            } catch (error) {
+                console.error('Erro ao carregar status da alimentação:', error);
+            }
+        }
+
+        async function toggleAutomation(type, active) {
+            try {
+                const response = await fetch(`${API_BASE}/automation/${type}/toggle`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ active })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(result.message);
+                } else {
+                    alert('Erro ao alterar automação');
+                }
+            } catch (error) {
+                console.error('Erro na automação:', error);
+                alert('Erro ao alterar automação. Verifique a conexão.');
+            }
+        }
+
+        async function toggleFeeding(active) {
+            try {
+                const response = await fetch(`${API_BASE}/feeding/toggle`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ active })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log(result.message);
+                } else {
+                    alert('Erro ao alterar alimentação automática');
+                }
+            } catch (error) {
+                console.error('Erro na alimentação:', error);
+                alert('Erro ao alterar alimentação. Verifique a conexão.');
+            }
+        }
+
+        async function manualWaterCycle() {
+            if (confirm('Iniciar ciclo manual de troca de água?\n\nIsso irá:\n1. Esvaziar 25% do aquário\n2. Aguardar 30 segundos\n3. Encher até 90%\n\nContinuar?')) {
+                try {
+                    const response = await fetch(`${API_BASE}/automation/water-cycle/manual`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        alert('Ciclo de troca de água iniciado! 🌊\n\nAcompanhe o processo no display do sistema.');
+                    } else {
+                        alert('Erro ao iniciar ciclo de água');
+                    }
+                } catch (error) {
+                    console.error('Erro no ciclo de água:', error);
+                    alert('Erro ao iniciar ciclo. Verifique a conexão.');
+                }
+            }
+        }
+
+        // Função de teste para todos os botões
+        async function testAllButtons() {
+            console.log('🧪 INICIANDO TESTE DE TODOS OS BOTÕES');
+            
+            // 1. Testar atualização de dados
+            console.log('📊 Testando atualização de dados...');
+            await updateData();
+            
+            // 2. Testar controle de relés
+            console.log('🔌 Testando controle de relés...');
+            for (const relay of ['LN1', 'LN2', 'LN3']) {
+                console.log(`- Testando relé ${relay}...`);
+                await toggleRelay(relay);
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Esperar 1s
+                await toggleRelay(relay); // Desligar
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            // 3. Testar alimentação manual
+            console.log('🐠 Testando alimentação manual...');
+            await manualFeeding();
+            
+            // 4. Testar automação
+            console.log('🤖 Testando automação...');
+            const automationTypes = ['temperature', 'water-quality', 'water-level', 'feeding'];
+            for (const type of automationTypes) {
+                console.log(`- Testando automação ${type}...`);
+                await toggleAutomation(type);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            
+            // 5. Log de ciclo manual (não executa para evitar confirmation dialog)
+            console.log('🌊 Botão de ciclo manual disponível (não executado automaticamente)');
+            
+            console.log('✅ TESTE DE BOTÕES CONCLUÍDO - Verifique o console para detalhes');
+            alert('✅ Teste de todos os botões concluído!\n\nVerifique o console (F12) para detalhes completos.');
+        }
+
+        // Adicionar botão de teste na interface (apenas para debug)
+        document.addEventListener('DOMContentLoaded', function() {
+            const debugButton = document.createElement('button');
+            debugButton.textContent = '🧪 Testar Todos os Botões';
+            debugButton.style.cssText = `
+                position: fixed;
+                top: 10px;
+                right: 10px;
+                background: #ff6b6b;
+                color: white;
+                border: none;
+                padding: 10px 15px;
+                border-radius: 5px;
+                cursor: pointer;
+                z-index: 1000;
+                font-weight: bold;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            `;
+            debugButton.onclick = testAllButtons;
+            document.body.appendChild(debugButton);
+        });
+
+        // Atualizar status da alimentação a cada 30 segundos
+        setInterval(loadFeedingStatus, 30000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# CMakeLists.txt para HydroSense v4
+cmake_minimum_required(VERSION 3.13)
+
+set(PICO_BOARD pico_w)
+
+include(pico_sdk_import.cmake)
+
+project(hydrosense_v4 C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+pico_sdk_init()
+
+add_executable(hydrosense_v4
+    src/hydrosense_v4.c
+)
+
+target_link_libraries(hydrosense_v4
+    pico_stdlib
+    hardware_i2c
+    hardware_gpio
+    hardware_pwm
+)
+
+pico_enable_stdio_usb(hydrosense_v4 1)
+pico_enable_stdio_uart(hydrosense_v4 0)
+
+pico_add_extra_outputs(hydrosense_v4)

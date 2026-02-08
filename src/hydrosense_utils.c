@@ -2,9 +2,46 @@
 #include "hardware/clocks.h"
 #include <stdio.h>
 
-// Implementações básicas para compilação
+// ============================================================
+// MELHORIAS v2.2 - Filtro de Média Móvel para Sensores
+// ============================================================
 
+// Configuração do filtro de média móvel
+#define FILTER_SAMPLES 10  // Número de amostras para média
+
+// Buffers circulares para filtro de média móvel
+static float temp_buffer[FILTER_SAMPLES] = {0};
+static float ph_buffer[FILTER_SAMPLES] = {0};
+static float nivel_buffer[FILTER_SAMPLES] = {0};
+static float turbidez_buffer[FILTER_SAMPLES] = {0};
+static uint8_t buffer_index = 0;
+static bool buffer_cheio = false;
+
+// Função auxiliar para calcular média móvel
+static float calcular_media_movel(float* buffer, float novo_valor) {
+    buffer[buffer_index] = novo_valor;
+    
+    int amostras = buffer_cheio ? FILTER_SAMPLES : (buffer_index + 1);
+    float soma = 0;
+    for (int i = 0; i < amostras; i++) {
+        soma += buffer[i];
+    }
+    return soma / amostras;
+}
+
+// Atualiza índice do buffer circular
+static void atualizar_buffer_index(void) {
+    buffer_index = (buffer_index + 1) % FILTER_SAMPLES;
+    if (buffer_index == 0) buffer_cheio = true;
+}
+
+// Cooldown para TPA (evita ativações repetidas)
+#define TPA_COOLDOWN_MS (30 * 60 * 1000)  // 30 minutos entre TPAs
+static uint32_t ultima_tpa_timestamp = 0;
+
+// ============================================================
 // NeoPixel (WS2812B) - implementação simplificada
+// ============================================================
 static uint32_t neopixel_buffer[NEOPIXEL_COUNT];
 
 void neopixel_init(void) {
@@ -91,17 +128,30 @@ void buzzer_feedback_botao(char botao) {
     return; // Não faz nada
 }
 
-// Sensores
+// ============================================================
+// Leitura de todos os sensores com atualização do buffer
+// ============================================================
 void sensores_ler_todos(void) {
     extern hydrosense_status_t system_status;
     
     system_status.temperatura = sensor_ler_temperatura();
     system_status.ph = sensor_ler_ph();
     system_status.nivel_agua = sensor_ler_nivel_agua();
+    
+    // Atualiza índice do buffer circular após ler todos
+    atualizar_buffer_index();
+    
+    // Log de debug a cada 10 leituras
+    static uint8_t log_counter = 0;
+    if (++log_counter >= 10) {
+        log_counter = 0;
+        printf("📈 Filtro: %d amostras | Buffer: %s\n", 
+               buffer_cheio ? FILTER_SAMPLES : buffer_index,
+               buffer_cheio ? "CHEIO" : "ENCHENDO");
+    }
 }
 
 float sensor_ler_temperatura(void) {
-    // Simulação baseada no código Python
     static bool adc_init_temp = false;
     if (!adc_init_temp) {
         adc_init();
@@ -110,10 +160,28 @@ float sensor_ler_temperatura(void) {
     }
     
     adc_select_input(ADC_TEMP_PIN - 26);
-    uint16_t adc_value = adc_read();
-    float voltage = (adc_value / 65535.0f) * 3.3f;
-    float temp = 20.0f + (voltage * 10.0f) + (get_timestamp_ms() % 1000 - 500) / 10000.0f;
-    return (temp < 20.0f) ? 20.0f : ((temp > 32.0f) ? 32.0f : temp);
+    
+    // Leitura múltipla para reduzir ruído (oversampling)
+    uint32_t soma = 0;
+    for (int i = 0; i < 4; i++) {
+        soma += adc_read();
+        sleep_us(100);
+    }
+    uint16_t adc_value = soma / 4;
+    
+    // Conversão para temperatura (calibração para NTC 10K)
+    float voltage = (adc_value / 4095.0f) * 3.3f;
+    
+    // Fórmula Steinhart-Hart simplificada para NTC
+    // R = 10000 * (3.3/V - 1), T = 1/(A + B*ln(R) + C*ln(R)^3) - 273.15
+    // Simplificado para range de aquicultura:
+    float temp_raw = 25.0f + ((voltage - 1.65f) * 15.0f);
+    
+    // Aplica filtro de média móvel
+    float temp = calcular_media_movel(temp_buffer, temp_raw);
+    
+    // Limita ao range válido
+    return (temp < 15.0f) ? 15.0f : ((temp > 35.0f) ? 35.0f : temp);
 }
 
 float sensor_ler_ph(void) {
@@ -124,10 +192,25 @@ float sensor_ler_ph(void) {
     }
     
     adc_select_input(ADC_PH_PIN - 26);
-    uint16_t adc_value = adc_read();
-    float voltage = (adc_value / 65535.0f) * 3.3f;
-    float ph = 7.0f - ((voltage - 1.65f) / 0.18f) + (get_timestamp_ms() % 500 - 250) / 50000.0f;
-    return (ph < 5.0f) ? 5.0f : ((ph > 9.0f) ? 9.0f : ph);
+    
+    // Leitura múltipla para estabilidade (pH varia lentamente)
+    uint32_t soma = 0;
+    for (int i = 0; i < 8; i++) {
+        soma += adc_read();
+        sleep_us(200);
+    }
+    uint16_t adc_value = soma / 8;
+    
+    // Conversão para pH (calibração típica de sensor E-201C)
+    // pH 7 = 1.65V, sensibilidade ~0.18V/pH
+    float voltage = (adc_value / 4095.0f) * 3.3f;
+    float ph_raw = 7.0f - ((voltage - 1.65f) / 0.18f);
+    
+    // Aplica filtro de média móvel (pH muda lentamente)
+    float ph = calcular_media_movel(ph_buffer, ph_raw);
+    
+    // Limita ao range válido para aquicultura
+    return (ph < 4.0f) ? 4.0f : ((ph > 10.0f) ? 10.0f : ph);
 }
 
 float sensor_ler_nivel_agua(void) {
@@ -138,9 +221,56 @@ float sensor_ler_nivel_agua(void) {
     }
     
     adc_select_input(ADC_NIVEL_PIN - 26);
-    uint16_t adc_value = adc_read();
-    float nivel = (adc_value / 65535.0f) * 100.0f;
+    
+    // Leitura múltipla para estabilidade
+    uint32_t soma = 0;
+    for (int i = 0; i < 4; i++) {
+        soma += adc_read();
+        sleep_us(100);
+    }
+    uint16_t adc_value = soma / 4;
+    
+    float nivel_raw = (adc_value / 4095.0f) * 100.0f;
+    
+    // Aplica filtro de média móvel
+    float nivel = calcular_media_movel(nivel_buffer, nivel_raw);
+    
     return (nivel < 0.0f) ? 0.0f : ((nivel > 100.0f) ? 100.0f : nivel);
+}
+
+// ============================================================
+// NOVO: Sensor de Turbidez
+// ============================================================
+float sensor_ler_turbidez(void) {
+    // Usa mesmo ADC que nível, mas em momento diferente
+    // Em produção, usar ADC separado ou multiplexador
+    static bool primeiro_read = true;
+    static float ultima_turbidez = 3.0f;
+    
+    adc_select_input(2);  // ADC2
+    
+    uint32_t soma = 0;
+    for (int i = 0; i < 8; i++) {
+        soma += adc_read();
+        sleep_us(150);
+    }
+    uint16_t adc_value = soma / 8;
+    
+    // Conversão para NTU (sensor típico de turbidez)
+    // Água limpa: ~0-5 NTU, Água turva: >10 NTU
+    float voltage = (adc_value / 4095.0f) * 3.3f;
+    float ntu_raw = (3.3f - voltage) * 10.0f;  // Inverso: menos luz = mais turbidez
+    
+    // Aplica filtro de média móvel
+    float ntu = calcular_media_movel(turbidez_buffer, ntu_raw);
+    
+    if (primeiro_read) {
+        primeiro_read = false;
+        atualizar_buffer_index();
+    }
+    
+    ultima_turbidez = ntu;
+    return (ntu < 0.0f) ? 0.0f : ((ntu > 50.0f) ? 50.0f : ntu);
 }
 
 // Sistema TPA
@@ -215,11 +345,38 @@ bool tpa_iniciar(const char* motivo) {
 bool tpa_verificar_necessario(void) {
     extern hydrosense_status_t system_status;
     
+    // Verifica se TPA já está em andamento
     if (system_status.tpa_em_andamento) return false;
     
-    if (system_status.ph >= PH_TPA_TRIGGER) {
-        printf("🚨 pH alto: %.1f >= %.1f\n", system_status.ph, PH_TPA_TRIGGER);
-        return tpa_iniciar("pH ALTO AUTOMÁTICO");
+    // Verifica cooldown (evita TPAs muito frequentes)
+    uint32_t agora = get_timestamp_ms();
+    if ((agora - ultima_tpa_timestamp) < TPA_COOLDOWN_MS && ultima_tpa_timestamp != 0) {
+        return false;
+    }
+    
+    // Verifica condições para TPA
+    bool ph_critico = (system_status.ph >= PH_TPA_TRIGGER) || (system_status.ph < PH_MIN);
+    bool nivel_baixo = (system_status.nivel_agua < NIVEL_CRITICO);
+    
+    if (ph_critico) {
+        printf("🚨 pH fora do range: %.2f (ideal: %.1f-%.1f)\n", 
+               system_status.ph, PH_MIN, PH_MAX);
+        ultima_tpa_timestamp = agora;
+        return tpa_iniciar("pH CRÍTICO - AUTOMÁTICO");
+    }
+    
+    // Verifica turbidez alta (nova condição)
+    float turbidez = sensor_ler_turbidez();
+    if (turbidez > 10.0f) {
+        printf("🚨 Turbidez alta: %.1f NTU (máx: 10 NTU)\n", turbidez);
+        ultima_tpa_timestamp = agora;
+        return tpa_iniciar("TURBIDEZ ALTA - AUTOMÁTICO");
+    }
+    
+    // Alerta de nível baixo (sem TPA, apenas notifica)
+    if (nivel_baixo) {
+        printf("⚠️ Nível baixo: %.1f%% - Verificar bomba de reposição\n", 
+               system_status.nivel_agua);
     }
     
     return false;

@@ -1,11 +1,17 @@
 #include "hydrosense_system.h"
 #include "hardware/rtc.h"
+#include "hardware/watchdog.h"
 #include <stdio.h>
+
+// Versão do sistema
+#define HYDROSENSE_VERSION "2.2.0"
+#define HYDROSENSE_BUILD_DATE __DATE__
 
 // Status global do sistema
 hydrosense_status_t system_status = {
     .temperatura = 25.0f,
     .ph = 7.0f,
+    .turbidez = 3.0f,           // NOVO: valor inicial de turbidez (água limpa)
     .nivel_agua = 100.0f,
     .wifi_conectado = false,
     .mqtt_conectado = false,
@@ -15,7 +21,8 @@ hydrosense_status_t system_status = {
     .menu_atual = MENU_MAIN,
     .menu_item_selecionado = 0,
     .ultimo_feeding = 0,
-    .uptime = 0
+    .uptime = 0,
+    .alimentacoes_hoje = 0      // NOVO: contador de alimentações
 };
 
 // Protótipos das funções externas
@@ -28,9 +35,17 @@ void hydrosense_init(void) {
     stdio_init_all();
     sleep_ms(2000);
     
-    printf("🌊 HydroSense v2.1 - Sistema Profissional de Aquicultura\n");
-    printf("============================================================\n");
-    printf("🔧 Versão C baseada na análise do código Python\n");
+    // Verifica se foi reset por watchdog
+    if (watchdog_caused_reboot()) {
+        printf("⚠️ Sistema reiniciado pelo WATCHDOG!\n");
+        printf("   Possível travamento detectado e recuperado automaticamente.\n\n");
+    }
+    
+    printf("╔══════════════════════════════════════════════════════════════╗\n");
+    printf("║  🌊 HydroSense v%s - Sistema de Aquicultura Inteligente   ║\n", HYDROSENSE_VERSION);
+    printf("║  📅 Build: %s                                        ║\n", HYDROSENSE_BUILD_DATE);
+    printf("╚══════════════════════════════════════════════════════════════╝\n");
+    printf("🔧 Iniciando sistema baseado em FreeRTOS + Pico SDK\n\n");
     
     // Inicializa RTC (como no Python)
     rtc_init();
@@ -43,6 +58,9 @@ void hydrosense_init(void) {
         .min = 0,
         .sec = 0
     };
+    rtc_set_datetime(&t);
+    printf("🕐 RTC inicializado: %04d-%02d-%02d %02d:%02d\n", 
+           t.year, t.month, t.day, t.hour, t.min);
     rtc_set_datetime(&t);
     
     system_status.estado = SISTEMA_INICIANDO;
@@ -165,8 +183,16 @@ void hydrosense_main_loop(void) {
     
     printf("🔄 Entrando no loop principal do sistema...\n");
     
+    // Habilita watchdog com timeout de 8 segundos
+    // Se o loop travar, o sistema reinicia automaticamente
+    watchdog_enable(8000, true);
+    printf("🐕 Watchdog habilitado (timeout: 8s)\n\n");
+    
     while (true) {
         uint32_t current_time = get_timestamp_ms();
+        
+        // Alimenta o watchdog a cada iteração
+        watchdog_update();
         
         // Leitura dos sensores a cada 5 segundos
         if (current_time - last_sensor_read > 5000) {
@@ -196,17 +222,36 @@ void hydrosense_main_loop(void) {
             last_led_update = current_time;
         }
         
-        // Status no console a cada 30 segundos
+        // Status no console a cada 30 segundos com mais informações
         if (current_time - last_status_print > 30000) {
             datetime_t dt;
             rtc_get_datetime(&dt);
-            printf("📊 %02d:%02d | Temp: %.1f°C | pH: %.1f | Nível: %.0f%% | WiFi: %s | Estado: %d\n",
-                   dt.hour, dt.min,
-                   system_status.temperatura,
-                   system_status.ph,
-                   system_status.nivel_agua,
-                   system_status.wifi_conectado ? "ON" : "OFF",
-                   system_status.estado);
+            
+            // Calcula uptime formatado
+            uint32_t uptime_sec = current_time / 1000;
+            uint32_t horas = uptime_sec / 3600;
+            uint32_t minutos = (uptime_sec % 3600) / 60;
+            
+            // Indicadores de status (usando ASCII para compatibilidade)
+            const char* status_temp = (system_status.temperatura >= TEMP_MIN && 
+                               system_status.temperatura <= TEMP_MAX) ? "[OK]" : "[!!]";
+            const char* status_ph = (system_status.ph >= PH_MIN && 
+                             system_status.ph <= PH_MAX) ? "[OK]" : "[!!]";
+            const char* status_nivel = (system_status.nivel_agua > NIVEL_CRITICO) ? "[OK]" : "[!!]";
+            
+            printf("═══════════════════════════════════════════════════════════════\n");
+            printf("📊 STATUS [%02d:%02d] | Uptime: %luh%02lum | Alimentações: %d\n",
+                   dt.hour, dt.min, horas, minutos, system_status.alimentacoes_hoje);
+            printf("🌡️ Temp: %.1f°C %s | 💧 pH: %.2f %s | 🌊 Nível: %.0f%% %s\n",
+                   system_status.temperatura, status_temp,
+                   system_status.ph, status_ph,
+                   system_status.nivel_agua, status_nivel);
+            printf("🔬 Turbidez: %.1f NTU | WiFi: %s | TPA: %s\n",
+                   system_status.turbidez,
+                   system_status.wifi_conectado ? "🟢 ON" : "🔴 OFF",
+                   system_status.tpa_em_andamento ? "🔄 ATIVO" : "⏹️ INATIVO");
+            printf("═══════════════════════════════════════════════════════════════\n");
+            
             last_status_print = current_time;
         }
         

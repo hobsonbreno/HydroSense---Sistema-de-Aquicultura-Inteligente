@@ -58,6 +58,7 @@ typedef enum {
 typedef struct {
     float temperatura;
     float ph;
+    float turbidez;         // NOVO: turbidez em NTU
     float nivel_agua;
     bool wifi_conectado;
     bool mqtt_conectado;
@@ -68,6 +69,7 @@ typedef struct {
     uint8_t menu_item_selecionado;
     uint32_t ultimo_feeding;
     uint32_t uptime;
+    uint8_t alimentacoes_hoje;  // NOVO: contador diário
 } hydrosense_status_t;
 
 // Cores NeoPixel (RGB)
@@ -187,7 +189,19 @@ bool oled_corrigir_texto_deitado(void);  // Correção específica para texto de
 float sensor_ler_temperatura(void);
 float sensor_ler_ph(void);
 float sensor_ler_nivel_agua(void);
+float sensor_ler_turbidez(void);  // NOVO: Sensor de turbidez
 void sensores_ler_todos(void);
+
+// Estatísticas dos sensores (novo)
+typedef struct {
+    float temp_min, temp_max, temp_media;
+    float ph_min, ph_max, ph_media;
+    float nivel_min, nivel_max;
+    uint32_t leituras_totais;
+} sensor_stats_t;
+
+void sensor_resetar_estatisticas(void);
+void sensor_obter_estatisticas(sensor_stats_t* stats);
 
 // Sistema TPA
 bool tpa_iniciar(const char* motivo);
