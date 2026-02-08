@@ -561,6 +561,116 @@ O sistema implementa um **hardware watchdog** com timeout de **8 segundos**. O l
 | POST | `/feed` | Acionar alimentação (servo) | JSON com sucesso/mensagem |
 | GET | `/` | Página HTML embarcada | HTML responsivo com auto-refresh |
 
+### 8.8. Segurança e IoT
+
+A segurança é um aspecto fundamental em sistemas IoT, pois dispositivos conectados à rede estão expostos a ameaças como interceptação de dados, acesso não autorizado e ataques de negação de serviço. O HydroSense implementa medidas de segurança em múltiplas camadas:
+
+#### 8.8.1. Segurança na Camada de Rede (WiFi)
+
+| Mecanismo | Implementação | Nível de Proteção |
+|---|---|---|
+| **WPA2-AES (PSK)** | Autenticação primária da rede WiFi | Alto — criptografia AES-128 em todos os pacotes |
+| **WPA2-MIXED (fallback)** | Segunda tentativa se WPA2-AES falhar | Médio-Alto |
+| **WPA-TKIP (fallback)** | Terceira tentativa para compatibilidade | Médio |
+| **Senha de rede** | SSID protegido por senha (`WIFI_PASSWORD`) | Impede conexões não autorizadas |
+
+O firmware implementa uma **estratégia de fallback de autenticação** em 3 níveis, priorizando o protocolo mais seguro (WPA2-AES) e regredindo apenas quando necessário para compatibilidade com roteadores mais antigos:
+
+```c
+// Tentativa 1: WPA2-AES (mais seguro)
+result = cyw43_arch_wifi_connect_timeout_ms(SSID, PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 30000);
+// Tentativa 2: WPA2-MIXED
+result = cyw43_arch_wifi_connect_timeout_ms(SSID, PASSWORD, CYW43_AUTH_WPA2_MIXED_PSK, 30000);
+// Tentativa 3: WPA-TKIP (legado)
+result = cyw43_arch_wifi_connect_timeout_ms(SSID, PASSWORD, CYW43_AUTH_WPA_TKIP_PSK, 30000);
+```
+
+#### 8.8.2. Segurança na Camada de Aplicação (HTTP)
+
+| Mecanismo | Descrição | Finalidade |
+|---|---|---|
+| **CORS (Cross-Origin Resource Sharing)** | Header `Access-Control-Allow-Origin: *` em todas as respostas | Permite acesso do frontend (porta 3001) à API do Pico W (porta 80) |
+| **OPTIONS (Preflight)** | Suporte a requisições preflight do navegador | Compatibilidade com CORS para métodos POST |
+| **Validação de payload** | Parsing manual do JSON recebido com `strstr()` | Aceita apenas campos esperados (`relay`, `toggle`, `tipo`, `estado`) |
+| **Isolamento de rede** | Pico W opera em rede WiFi dedicada ("HydroSense") | Segmentação de rede — dispositivo não exposto à internet pública |
+| **Conexão close** | Header `Connection: close` em todas as respostas HTTP | Impede reuso de conexão TCP, liberando recursos do lwIP |
+
+#### 8.8.3. Segurança de Hardware e Firmware
+
+| Mecanismo | Descrição |
+|---|---|
+| **Watchdog Timer (8s)** | Reinicia automaticamente o sistema em caso de travamento, prevenindo falhas de segurança por software indisponível |
+| **Relés normalmente desligados** | Na inicialização, todos os relés (GPIO 17, 18, 19) são configurados em LOW (desligado), evitando acionamento acidental de bombas ou ventilador |
+| **Limpeza de emergência** | Se o firmware atingir um estado inesperado, desliga todas as bombas e limpa LEDs como medida de segurança (`hydrosense_main.c`, função `main()`) |
+| **Limites de atuadores** | Servo motor com ângulo limitado a 0°–180°, PWM desligado após alimentação, impedindo superaquecimento |
+| **Auto-desligamento do ventilador** | Ventilador desliga automaticamente quando temperatura volta ao normal (≤28°C), evitando funcionamento desnecessário |
+
+#### 8.8.4. Segurança na Interface Web (Frontend)
+
+| Mecanismo | Descrição |
+|---|---|
+| **Cooldown de voz (TTS)** | Intervalo mínimo de 10 segundos entre mensagens com mesmo ID, evitando spam de áudio |
+| **Timeout de requisição** | `AbortSignal.timeout(5000)` — requisições ao Pico W expiram em 5 segundos, evitando bloqueio da interface |
+| **Fallback automático** | Se o Pico W não responder, o frontend usa o backend como fonte de dados, garantindo operação contínua |
+| **Detecção de conexão** | Badge visual indica estado da conexão (Pico W / Backend / Offline), alertando o usuário sobre problemas de rede |
+| **Proteção contra alimentação duplicada** | Variável `lastScheduledFeed` impede que a alimentação programada dispare mais de uma vez no mesmo minuto |
+
+#### 8.8.5. Arquitetura IoT — Modelo de Referência
+
+O HydroSense segue uma arquitetura IoT de **3 camadas**, conforme o modelo de referência IoT-A (Internet of Things Architecture):
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CAMADA 3 — APLICAÇÃO                                          │
+│  ┌───────────────────┐  ┌──────────────────┐                   │
+│  │  Dashboard Web    │  │  Síntese de Voz  │                   │
+│  │  (HTML5/CSS/JS)   │  │  (Web Speech API)│                   │
+│  │  Porta 3001       │  │  pt-BR           │                   │
+│  └────────┬──────────┘  └────────┬─────────┘                   │
+│           │ HTTP/JSON            │ Browser API                  │
+│  ┌────────▼──────────────────────▼─────────┐                   │
+│  │  Backend Node.js + Express (Porta 3000) │                   │
+│  │  API REST — Mock data + Proxy Pico W    │                   │
+│  └────────┬────────────────────────────────┘                   │
+├───────────┼─────────────────────────────────────────────────────┤
+│  CAMADA 2 — REDE / COMUNICAÇÃO                                 │
+│           │ WiFi 802.11 b/g/n (2.4 GHz)                        │
+│           │ WPA2-AES — Criptografia de enlace                  │
+│           │ TCP/IP — lwIP stack embarcado                       │
+│           │ HTTP — Servidor TCP raw porta 80                    │
+│  ┌────────▼────────────────────────────────┐                   │
+│  │  CYW43439 — Chip WiFi integrado Pico W │                   │
+│  │  IP: 10.0.0.181 (rede dedicada)        │                   │
+│  └────────┬────────────────────────────────┘                   │
+├───────────┼─────────────────────────────────────────────────────┤
+│  CAMADA 1 — PERCEPÇÃO / DISPOSITIVOS                           │
+│  ┌────────▼────────────────────────────────┐                   │
+│  │  Raspberry Pi Pico W (RP2040)           │                   │
+│  │  + FreeRTOS (3 Tasks concorrentes)      │                   │
+│  │  + Pico SDK 2.2.0                       │                   │
+│  ├─────────────────────────────────────────┤                   │
+│  │  Sensores:           Atuadores:         │                   │
+│  │  • AHT10 (I2C)       • Servo SG90 (PWM)│                   │
+│  │  • VL53L0X (I2C)     • 3 Relés (GPIO)  │                   │
+│  │  Display:             • LED RGB (GPIO)  │                   │
+│  │  • SSD1306 OLED       • Buzzer (GPIO)   │                   │
+│  └─────────────────────────────────────────┘                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 8.8.6. Considerações de Segurança e Limitações Conhecidas
+
+| Aspecto | Estado Atual | Melhoria Futura |
+|---|---|---|
+| **Autenticação HTTP** | Não implementada (API aberta na rede local) | Adicionar autenticação básica (HTTP Basic Auth) ou tokens JWT |
+| **Criptografia HTTP** | HTTP puro (sem TLS/HTTPS) | Implementar TLS 1.3 com certificados auto-assinados |
+| **Rate limiting** | Não implementado | Limitar requisições por IP para prevenir DoS |
+| **Logs de auditoria** | Apenas console serial | Gravar logs em cartão SD com timestamps para rastreabilidade |
+| **Atualização OTA** | Não implementada | Implementar OTA (Over-the-Air) com verificação de assinatura digital |
+| **Segregação de rede** | Rede WiFi dedicada (isolada) | Adicionar VLAN ou firewall no roteador |
+
+> **Nota:** O HydroSense opera em uma **rede WiFi dedicada e isolada** ("HydroSense"), o que por si só constitui uma camada de segurança significativa em cenários de aquicultura doméstica ou de pequeno porte. A API não é exposta à internet pública, mitigando os riscos mais críticos de sistemas IoT. As melhorias listadas acima são recomendadas para cenários de produção em escala ou acesso remoto via internet.
+
 ---
 
 ## 9. Evidências de Funcionamento
