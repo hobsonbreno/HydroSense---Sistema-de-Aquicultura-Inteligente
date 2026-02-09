@@ -71,9 +71,42 @@ app.get('/relays/status', (req, res) => {
   });
 });
 
-app.post('/relays/control', (req, res) => {
+app.post('/relays/control', async (req, res) => {
   const { tipo, estado, origem = 'manual', observacao } = req.body;
   
+  // Tenta enviar para o Pico W primeiro (proxy)
+  const PICO_IP = mockSensorData.deviceIp || '10.0.0.181';
+  const relayMap = { LN1: 1, LN2: 2, LN3: 3 };
+  const relayNum = relayMap[tipo];
+  
+  if (relayNum) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const picoRes = await fetch(`http://${PICO_IP}/relay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ relay: relayNum, state: estado ? 1 : 0 }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (picoRes.ok) {
+        const picoData = await picoRes.json();
+        console.log(`Relé ${tipo}: ${estado ? 'LIGADO' : 'DESLIGADO'} via Pico W (${origem})`);
+        // Atualiza mock com estado real do Pico
+        if (picoData.relays) {
+          mockRelayStates.LN1 = { estado: picoData.relays.LN1, ultimaAlteracao: new Date(), observacao: 'Via Pico W' };
+          mockRelayStates.LN2 = { estado: picoData.relays.LN2, ultimaAlteracao: new Date(), observacao: 'Via Pico W' };
+          mockRelayStates.LN3 = { estado: picoData.relays.LN3, ultimaAlteracao: new Date(), observacao: 'Via Pico W' };
+        }
+        return res.json({ success: true, source: 'pico', message: `Relé ${tipo} controlado via Pico W`, data: mockRelayStates[tipo] });
+      }
+    } catch (e) {
+      console.log(`Pico W indisponível para relé, usando fallback mock`);
+    }
+  }
+  
+  // Fallback: mock local
   if (mockRelayStates[tipo]) {
     mockRelayStates[tipo] = {
       estado,
@@ -81,8 +114,8 @@ app.post('/relays/control', (req, res) => {
       observacao: observacao || `Relé ${tipo} ${estado ? 'ligado' : 'desligado'}`
     };
     
-    console.log(`Relé ${tipo}: ${estado ? 'LIGADO' : 'DESLIGADO'} (${origem})`);
-    res.json({ success: true, message: `Relé ${tipo} controlado com sucesso`, data: mockRelayStates[tipo] });
+    console.log(`Relé ${tipo}: ${estado ? 'LIGADO' : 'DESLIGADO'} (${origem}) [mock]`);
+    res.json({ success: true, source: 'mock', message: `Relé ${tipo} controlado (mock)`, data: mockRelayStates[tipo] });
   } else {
     res.status(400).json({ error: 'Tipo de relé inválido' });
   }

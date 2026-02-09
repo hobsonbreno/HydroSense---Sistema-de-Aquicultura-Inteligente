@@ -116,6 +116,11 @@ static volatile bool g_relay_ln1 = false;
 static volatile bool g_relay_ln2 = false;
 static volatile bool g_relay_ln3 = false;
 
+// Override manual: quando usuario controla rele manualmente,
+// a automacao nao interfere por MANUAL_OVERRIDE_TIME_MS
+#define MANUAL_OVERRIDE_TIME_MS (5 * 60 * 1000)  // 5 minutos
+static volatile uint32_t g_ln1_manual_override_until = 0;  // timestamp em ms
+
 // ============================================================
 // I2C SWITCHING - Alterna entre sensores e OLED
 // ============================================================
@@ -900,7 +905,20 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     char *request = (char *)p->payload;
     int send_len = 0;
 
-    if (strstr(request, "GET /sensors") || strstr(request, "GET /api")) {
+    // CORS Preflight (OPTIONS) - necessario para frontend externo
+    if (strstr(request, "OPTIONS ")) {
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 204 No Content\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Content-Type\r\n"
+            "Access-Control-Max-Age: 86400\r\n"
+            "Connection: close\r\n"
+            "\r\n");
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "GET /sensors") || strstr(request, "GET /api")) {
         build_sensor_json();
         snprintf(http_resp, sizeof(http_resp),
             "HTTP/1.1 200 OK\r\n"
@@ -914,15 +932,31 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         tcp_write(tpcb, http_resp, send_len, 0);
     }
     else if (strstr(request, "POST /relay")) {
-        if (strstr(request, "\"toggle\":true")) {
-            if (strstr(request, "\"relay\":1")) relay_set(1, !g_relay_ln1);
-            else if (strstr(request, "\"relay\":2")) relay_set(2, !g_relay_ln2);
-            else if (strstr(request, "\"relay\":3")) relay_set(3, !g_relay_ln3);
-        } else {
-            bool state = (strstr(request, "\"state\":1") != NULL) || (strstr(request, "\"estado\":true") != NULL);
-            if (strstr(request, "\"relay\":1") || strstr(request, "\"tipo\":\"LN1\"")) relay_set(1, state);
-            else if (strstr(request, "\"relay\":2") || strstr(request, "\"tipo\":\"LN2\"")) relay_set(2, state);
-            else if (strstr(request, "\"relay\":3") || strstr(request, "\"tipo\":\"LN3\"")) relay_set(3, state);
+        // Parse relay number com mais precisao
+        int relay_num = 0;
+        char *rp = strstr(request, "\"relay\"");
+        if (rp) {
+            rp = strchr(rp, ':');
+            if (rp) relay_num = atoi(rp + 1);
+        }
+        
+        if (relay_num >= 1 && relay_num <= 3) {
+            if (strstr(request, "\"toggle\":true")) {
+                switch (relay_num) {
+                    case 1: relay_set(1, !g_relay_ln1); break;
+                    case 2: relay_set(2, !g_relay_ln2); break;
+                    case 3: relay_set(3, !g_relay_ln3); break;
+                }
+            } else {
+                bool state = (strstr(request, "\"state\":1") != NULL) ||
+                             (strstr(request, "\"estado\":true") != NULL);
+                relay_set(relay_num, state);
+            }
+            // Marca override manual para o rele 1 (ventilador)
+            if (relay_num == 1) {
+                g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
+                printf("[RELAY] Override manual LN1 por 5min\n");
+            }
         }
         snprintf(json_buf, sizeof(json_buf),
             "{\"success\":true,\"relays\":{\"LN1\":%s,\"LN2\":%s,\"LN3\":%s}}",
@@ -1039,13 +1073,18 @@ void read_sensors(void) {
     if (g_nivel > 100) g_nivel = 100;
     g_volume = (g_nivel / 100.0f) * TANK_CAPACITY_L;
     
-    // Automacao: liga ventilador se temp alta
-    if (g_temp > TEMP_THRESHOLD && !g_relay_ln1) {
-        relay_set(1, true);
-        printf("[AUTO] Ventilador ON (T>%.0f)\n", TEMP_THRESHOLD);
-    } else if (g_temp <= (TEMP_THRESHOLD - 1.0f) && g_relay_ln1) {
-        relay_set(1, false);
-        printf("[AUTO] Ventilador OFF\n");
+    // Automacao: liga ventilador se temp alta (respeita override manual)
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    bool manual_override = (now_ms < g_ln1_manual_override_until);
+    
+    if (!manual_override) {
+        if (g_temp > TEMP_THRESHOLD && !g_relay_ln1) {
+            relay_set(1, true);
+            printf("[AUTO] Ventilador ON (T>%.0f)\n", TEMP_THRESHOLD);
+        } else if (g_temp <= (TEMP_THRESHOLD - 1.0f) && g_relay_ln1) {
+            relay_set(1, false);
+            printf("[AUTO] Ventilador OFF\n");
+        }
     }
 }
 
