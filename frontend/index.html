@@ -74,6 +74,8 @@
         .sensor-box.dist { border-color: #9b59b6; }
         .sensor-box.nivel { border-color: #2ecc71; }
         .sensor-box.vol  { border-color: #f39c12; grid-column: 1 / -1; }
+        .sensor-box.cor  { border-color: #9b59b6; grid-column: 1 / -1; }
+        .cor-indicator { display: inline-block; width: 22px; height: 22px; border-radius: 50%; margin-right: 10px; vertical-align: middle; border: 2px solid rgba(255,255,255,0.3); transition: background 0.5s; }
         .sensor-box.alert { background: rgba(231,76,60,0.2); animation: pulse-alert 1.5s infinite; }
         @keyframes pulse-alert { 0%,100%{opacity:1} 50%{opacity:0.7} }
         .sensor-icon { font-size: 1.6rem; }
@@ -286,6 +288,11 @@
                         <div class="sensor-val" id="valVol">--</div>
                         <div class="sensor-unit">Litros</div>
                         <div class="sensor-label">Volume do Aquário</div>
+                    </div>
+                    <div class="sensor-box cor">
+                        <div class="sensor-icon">🎨</div>
+                        <div><span class="cor-indicator" id="corIndicator"></span><span class="sensor-val" id="valCor" style="display:inline;font-size:1.8rem">--</span></div>
+                        <div class="sensor-label">Cor / Qualidade da Água</div>
                     </div>
                 </div>
                 <div class="level-bar">
@@ -503,12 +510,17 @@
             const dist  = parseFloat(data.distancia)   || 0;
             const nivel = parseFloat(data.nivel)        || 0;
             const vol   = parseFloat(data.volume)       || 0;
+            const corAgua = data.corAgua || '--';
 
             document.getElementById('valTemp').textContent  = temp.toFixed(1);
             document.getElementById('valHum').textContent   = hum.toFixed(0);
             document.getElementById('valDist').textContent  = dist.toFixed(0);
             document.getElementById('valNivel').textContent = nivel.toFixed(0);
             document.getElementById('valVol').textContent   = vol.toFixed(1);
+            document.getElementById('valCor').textContent   = corAgua;
+            // Indicador visual de cor da agua
+            const corColors = {'Cristalino':'#87CEEB','Verde':'#2ecc71','Azul':'#3498db','Vermelho':'#e74c3c','Amarelado':'#f1c40f','Turvo':'#95a5a6','Escuro':'#2c3e50','N/A':'#666'};
+            document.getElementById('corIndicator').style.background = corColors[corAgua] || '#666';
             document.getElementById('readCount').textContent = data.contadorLeituras || 0;
             document.getElementById('deviceIp').textContent  = data.deviceIp || PICO_IP;
 

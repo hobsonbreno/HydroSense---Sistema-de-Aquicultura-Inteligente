@@ -17,10 +17,14 @@ let mockSensorData = {
   distancia: 120,
   nivel: 75.5,
   volume: 15.1,
-  corAgua: 'cristalino',
+  corAgua: 'Cristalino',
+  corR: 1200,
+  corG: 1100,
+  corB: 1000,
   wifiStatus: true,
   contadorLeituras: 150,
   deviceIp: '10.0.0.181',
+  sensores: { aht10: true, vl53l0x: true, tcs34725: true },
   timestamp: Date.now()
 };
 
@@ -43,6 +47,11 @@ app.get('/sensors', (req, res) => {
   mockSensorData.distancia = 100 + Math.random() * 50; // 100-150mm
   mockSensorData.nivel = 70 + Math.random() * 20; // 70-90%
   mockSensorData.volume = mockSensorData.nivel * 0.2; // Volume baseado no nível
+  const cores = ['Cristalino', 'Verde', 'Azul', 'Turvo', 'Amarelado'];
+  mockSensorData.corAgua = cores[Math.floor(Math.random() * cores.length)];
+  mockSensorData.corR = Math.floor(Math.random() * 3000);
+  mockSensorData.corG = Math.floor(Math.random() * 3000);
+  mockSensorData.corB = Math.floor(Math.random() * 3000);
   mockSensorData.contadorLeituras++;
   mockSensorData.timestamp = Date.now();
   

@@ -74,6 +74,9 @@
 // ============================================================
 #define AHT10_ADDR      0x38
 #define VL53L0X_ADDR    0x29
+#define VL53L0X_NEW_ADDR 0x30   // Novo endereco para liberar 0x29 pro TCS34725
+#define TCS34725_ADDR   0x29
+#define TCS34725_CMD    0x80   // Command bit
 #define OLED_ADDR       0x3C
 
 // ============================================================
@@ -91,13 +94,18 @@ static int current_i2c_mode = 0;  // 0=nenhum, 1=sensores, 2=oled
 // Dados dos sensores
 static volatile float g_temp = 25.0f;
 static volatile float g_hum = 60.0f;
-static volatile uint16_t g_dist = 100;
-static volatile float g_nivel = 50.0f;
-static volatile float g_volume = 10.0f;
+static volatile uint16_t g_dist = 200;   // Default = TANK_HEIGHT (tanque vazio)
+static volatile float g_nivel = 0.0f;
+static volatile float g_volume = 0.0f;
+
+// Cor da agua (TCS34725)
+static volatile uint16_t g_cor_r = 0, g_cor_g = 0, g_cor_b = 0, g_cor_c = 0;
+static char g_cor_nome[16] = "N/A";
 
 // Status
 static volatile bool g_aht_ok = false;
 static volatile bool g_vl53_ok = false;
+static volatile bool g_tcs_ok = false;
 static volatile bool g_oled_ok = false;
 static volatile bool g_wifi = false;
 static volatile uint32_t g_count = 0;
@@ -182,40 +190,212 @@ bool aht10_read(float *temp, float *hum) {
 }
 
 // ============================================================
-// VL53L0X - Sensor de Distancia
+// VL53L0X - Sensor de Distancia (com mudanca de endereco)
 // ============================================================
+
+static uint8_t vl53_addr = VL53L0X_ADDR;  // Endereco atual (muda para NEW_ADDR no init)
+static uint8_t vl53_stop_variable = 0;
+
+static bool vl53_write_reg(uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = {reg, val};
+    return i2c_write_blocking(i2c1, vl53_addr, buf, 2, false) == 2;
+}
+
+static bool vl53_write_reg16(uint8_t reg, uint16_t val) {
+    uint8_t buf[3] = {reg, (uint8_t)(val >> 8), (uint8_t)(val & 0xFF)};
+    return i2c_write_blocking(i2c1, vl53_addr, buf, 3, false) == 3;
+}
+
+static uint8_t vl53_read_reg(uint8_t reg) {
+    uint8_t val = 0;
+    i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true);
+    i2c_read_blocking(i2c1, vl53_addr, &val, 1, false);
+    return val;
+}
 
 bool vl53_init(void) {
     i2c_switch_to_sensors();
-    sleep_ms(50);
+    sleep_ms(100);
     
+    vl53_addr = VL53L0X_ADDR;
+    
+    // Verifica presenca no endereco padrao
     uint8_t dummy;
-    int ret = i2c_read_blocking(i2c1, VL53L0X_ADDR, &dummy, 1, false);
-    if (ret < 0) return false;
+    if (i2c_read_blocking(i2c1, vl53_addr, &dummy, 1, false) < 0) {
+        // Talvez ja esteja no novo endereco (boot anterior)
+        vl53_addr = VL53L0X_NEW_ADDR;
+        if (i2c_read_blocking(i2c1, vl53_addr, &dummy, 1, false) < 0) {
+            printf("   VL53L0X: nao encontrado\n");
+            return false;
+        }
+        printf("   VL53L0X ja em 0x%02X\n", vl53_addr);
+    }
     
-    uint8_t reg = 0xC0;
-    uint8_t id = 0;
-    i2c_write_blocking(i2c1, VL53L0X_ADDR, &reg, 1, true);
-    i2c_read_blocking(i2c1, VL53L0X_ADDR, &id, 1, false);
+    // Verifica ID (deve ser 0xEE)
+    uint8_t id = vl53_read_reg(0xC0);
     printf("   VL53L0X ID: 0x%02X\n", id);
+    if (id != 0xEE) return false;
+    
+    // Data init (sequencia simplificada baseada na lib Pololu)
+    vl53_write_reg(0x88, 0x00);  // Modo 2V8
+    
+    // Configuracao de GPIO/interrupcao
+    vl53_write_reg(0x80, 0x01);
+    vl53_write_reg(0xFF, 0x01);
+    vl53_write_reg(0x00, 0x00);
+    vl53_stop_variable = vl53_read_reg(0x91);
+    vl53_write_reg(0x00, 0x01);
+    vl53_write_reg(0xFF, 0x00);
+    vl53_write_reg(0x80, 0x00);
+    
+    // Configura interrupcao ativa baixa
+    uint8_t cfg = vl53_read_reg(0x0A);
+    vl53_write_reg(0x0A, cfg & ~0x10);
+    vl53_write_reg(0x0B, 0x01);  // Limpa interrupcao
+    
+    // Sequence config e rate limit
+    vl53_write_reg(0x01, 0xE8);
+    vl53_write_reg16(0x44, 0x0020);  // Signal rate limit 0.25 MCPS
+    
+    // Muda endereco I2C para liberar 0x29 para TCS34725
+    if (vl53_addr == VL53L0X_ADDR) {
+        vl53_write_reg(0x8A, VL53L0X_NEW_ADDR);
+        vl53_addr = VL53L0X_NEW_ADDR;
+        sleep_ms(10);
+        printf("   VL53L0X addr -> 0x%02X\n", vl53_addr);
+    }
+    
     return true;
 }
 
 uint16_t vl53_read(void) {
     i2c_switch_to_sensors();
     
-    uint8_t cmd[2] = {0x00, 0x01};
-    if (i2c_write_blocking(i2c1, VL53L0X_ADDR, cmd, 2, false) != 2) return 0xFFFF;
-    sleep_ms(50);
+    // Sequencia de inicio de medicao single-shot (com stop_variable)
+    vl53_write_reg(0x80, 0x01);
+    vl53_write_reg(0xFF, 0x01);
+    vl53_write_reg(0x00, 0x00);
+    vl53_write_reg(0x91, vl53_stop_variable);
+    vl53_write_reg(0x00, 0x01);
+    vl53_write_reg(0xFF, 0x00);
+    vl53_write_reg(0x80, 0x00);
+    vl53_write_reg(0x00, 0x01);  // SYSRANGE_START = single shot
     
+    // Aguarda conclusao da medicao (poll registro 0x13)
+    for (int i = 0; i < 200; i++) {
+        uint8_t status = vl53_read_reg(0x13);
+        if (status & 0x07) break;
+        sleep_ms(1);
+        if (i == 199) return 0xFFFF;  // Timeout
+    }
+    
+    // Le distancia (RESULT_RANGE_STATUS + 10 = 0x1E)
     uint8_t reg = 0x1E;
     uint8_t buf[2] = {0, 0};
-    i2c_write_blocking(i2c1, VL53L0X_ADDR, &reg, 1, true);
-    i2c_read_blocking(i2c1, VL53L0X_ADDR, buf, 2, false);
+    i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true);
+    i2c_read_blocking(i2c1, vl53_addr, buf, 2, false);
+    
+    // Limpa interrupcao
+    vl53_write_reg(0x0B, 0x01);
     
     uint16_t dist = (buf[0] << 8) | buf[1];
-    if (dist == 0 || dist > 2000 || buf[0] == 0x1E) return 0xFFFF;
+    if (dist == 0 || dist > 2000 || dist == 8190) return 0xFFFF;
     return dist;
+}
+
+// ============================================================
+// TCS34725 - Sensor de Cor RGB
+// ============================================================
+
+static bool tcs_write_reg(uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = {(uint8_t)(TCS34725_CMD | reg), val};
+    return i2c_write_blocking(i2c1, TCS34725_ADDR, buf, 2, false) == 2;
+}
+
+static uint8_t tcs_read_reg(uint8_t reg) {
+    uint8_t cmd = TCS34725_CMD | reg;
+    uint8_t val = 0;
+    i2c_write_blocking(i2c1, TCS34725_ADDR, &cmd, 1, true);
+    i2c_read_blocking(i2c1, TCS34725_ADDR, &val, 1, false);
+    return val;
+}
+
+static uint16_t tcs_read_reg16(uint8_t reg) {
+    uint8_t cmd = TCS34725_CMD | 0x20 | reg;  // Auto-increment
+    uint8_t buf[2] = {0, 0};
+    i2c_write_blocking(i2c1, TCS34725_ADDR, &cmd, 1, true);
+    i2c_read_blocking(i2c1, TCS34725_ADDR, buf, 2, false);
+    return (uint16_t)(buf[1] << 8) | buf[0];  // Little-endian
+}
+
+bool tcs_init(void) {
+    i2c_switch_to_sensors();
+    sleep_ms(50);
+    
+    // Verifica presenca
+    uint8_t dummy;
+    if (i2c_read_blocking(i2c1, TCS34725_ADDR, &dummy, 1, false) < 0) {
+        printf("   TCS34725: nao encontrado\n");
+        return false;
+    }
+    
+    // Verifica ID (0x44 = TCS34725, 0x4D = TCS34727)
+    uint8_t id = tcs_read_reg(0x12);
+    printf("   TCS34725 ID: 0x%02X\n", id);
+    if (id != 0x44 && id != 0x4D) return false;
+    
+    // ATIME = 0xD5 -> ~101ms integracao (10-bit)
+    tcs_write_reg(0x01, 0xD5);
+    // Ganho 4x (0x01)
+    tcs_write_reg(0x0F, 0x01);
+    // Power ON
+    tcs_write_reg(0x00, 0x01);
+    sleep_ms(3);
+    // Power ON + ADC Enable
+    tcs_write_reg(0x00, 0x03);
+    sleep_ms(154);  // Aguarda primeiro ciclo de integracao
+    
+    printf("   TCS34725: configurado OK\n");
+    return true;
+}
+
+void tcs_read_color(void) {
+    i2c_switch_to_sensors();
+    
+    // Verifica se dados estao prontos (AVALID bit)
+    uint8_t status = tcs_read_reg(0x13);
+    if (!(status & 0x01)) return;
+    
+    // Le valores RGBC
+    g_cor_c = tcs_read_reg16(0x14);  // Clear
+    g_cor_r = tcs_read_reg16(0x16);  // Red
+    g_cor_g = tcs_read_reg16(0x18);  // Green
+    g_cor_b = tcs_read_reg16(0x1A);  // Blue
+    
+    // Classifica cor para qualidade da agua
+    if (g_cor_c < 200) {
+        snprintf(g_cor_nome, sizeof(g_cor_nome), "Escuro");
+    } else if (g_cor_c > 4000) {
+        snprintf(g_cor_nome, sizeof(g_cor_nome), "Cristalino");
+    } else {
+        float r_ratio = (float)g_cor_r / (float)g_cor_c;
+        float g_ratio = (float)g_cor_g / (float)g_cor_c;
+        float b_ratio = (float)g_cor_b / (float)g_cor_c;
+        
+        if (g_ratio > 0.35f && g_ratio > r_ratio && g_ratio > b_ratio) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Verde");
+        } else if (r_ratio > 0.35f && r_ratio > g_ratio * 1.3f) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Vermelho");
+        } else if (b_ratio > 0.35f && b_ratio > r_ratio && b_ratio > g_ratio) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Azul");
+        } else if (r_ratio > 0.30f && g_ratio > 0.30f && b_ratio < 0.25f) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Amarelado");
+        } else if (g_cor_c > 2000) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Cristalino");
+        } else {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Turvo");
+        }
+    }
 }
 
 // ============================================================
@@ -616,6 +796,7 @@ static const char *HTML_PAGE =
 "<div class='s n'><div class='v' id='n'>--</div><div class='u'>%</div><div class='l'>Nivel</div></div>"
 "</div>"
 "<div class='s vo' style='margin-top:15px'><div class='v' id='vl'>--</div><div class='u'>Litros</div><div class='l'>Volume</div></div>"
+"<div class='s co' style='margin-top:10px;border-left:4px solid #9b59b6'><div class='v' id='co'>--</div><div class='u'>&#x1F3A8;</div><div class='l'>Cor da Agua</div></div>"
 "</div>"
 "<div class='cd'>"
 "<h2>Reles</h2>"
@@ -635,6 +816,7 @@ static const char *HTML_PAGE =
 "<div class='st'><span><span class='dot' id='wd'></span>WiFi</span><span id='ws'>--</span></div>"
 "<div class='st'><span><span class='dot' id='ad'></span>AHT10</span><span id='as'>--</span></div>"
 "<div class='st'><span><span class='dot' id='vd'></span>VL53L0X</span><span id='vs'>--</span></div>"
+"<div class='st'><span><span class='dot' id='td'></span>TCS34725</span><span id='ts'>--</span></div>"
 "<div class='st'><span>Leituras</span><span id='ct'>0</span></div>"
 "</div>"
 "</div>"
@@ -652,6 +834,8 @@ static const char *HTML_PAGE =
 "document.getElementById('as').textContent=j.sensores.aht10?'OK':'Erro';"
 "document.getElementById('vd').className='dot '+(j.sensores.vl53l0x?'on':'off');"
 "document.getElementById('vs').textContent=j.sensores.vl53l0x?'OK':'Erro';"
+"document.getElementById('co').textContent=j.corAgua||'--';"
+"if(j.sensores.tcs34725!==undefined){document.getElementById('td').className='dot '+(j.sensores.tcs34725?'on':'off');document.getElementById('ts').textContent=j.sensores.tcs34725?'OK':'N/A';}"
 "var r=j.relays;"
 "document.getElementById('r1').className='rb'+(r.LN1?' on':'');"
 "document.getElementById('r2').className='rb'+(r.LN2?' on':'');"
@@ -665,7 +849,7 @@ static const char *HTML_PAGE =
 
 // Buffers HTTP (estaticos como v7)
 static char http_resp[8192];
-static char json_buf[512];
+static char json_buf[768];
 static char http_header[256];
 
 // Tracking de conexao ativa
@@ -681,12 +865,15 @@ static void build_sensor_json(void) {
     snprintf(json_buf, sizeof(json_buf),
         "{\"temperatura\":%.2f,\"umidade\":%.2f,\"distancia\":%d,"
         "\"nivel\":%.2f,\"volume\":%.2f,"
+        "\"corAgua\":\"%s\",\"corR\":%d,\"corG\":%d,\"corB\":%d,"
         "\"wifiStatus\":true,\"contadorLeituras\":%d,\"deviceIp\":\"%s\","
         "\"relays\":{\"LN1\":%s,\"LN2\":%s,\"LN3\":%s},"
-        "\"sensores\":{\"aht10\":%s,\"vl53l0x\":%s}}",
-        g_temp, g_hum, g_dist, g_nivel, g_volume, g_count, g_ip,
+        "\"sensores\":{\"aht10\":%s,\"vl53l0x\":%s,\"tcs34725\":%s}}",
+        g_temp, g_hum, g_dist, g_nivel, g_volume,
+        g_cor_nome, g_cor_r, g_cor_g, g_cor_b,
+        g_count, g_ip,
         g_relay_ln1?"true":"false", g_relay_ln2?"true":"false", g_relay_ln3?"true":"false",
-        g_aht_ok?"true":"false", g_vl53_ok?"true":"false");
+        g_aht_ok?"true":"false", g_vl53_ok?"true":"false", g_tcs_ok?"true":"false");
 }
 
 // Callback chamado quando dados sao confirmados enviados
@@ -835,7 +1022,14 @@ void read_sensors(void) {
         uint16_t dist = vl53_read();
         if (dist != 0xFFFF && dist < 2000) {
             g_dist = dist;
+        } else {
+            printf("[VL53] Falha leitura (0x%04X)\n", dist);
         }
+    }
+    
+    // TCS34725
+    if (g_tcs_ok) {
+        tcs_read_color();
     }
     
     // Calcula nivel e volume
@@ -897,6 +1091,8 @@ int main() {
     printf("  AHT10: %s\n", g_aht_ok ? "OK" : "N/A");
     g_vl53_ok = vl53_init();
     printf("  VL53L0X: %s\n", g_vl53_ok ? "OK" : "N/A");
+    g_tcs_ok = tcs_init();
+    printf("  TCS34725: %s\n", g_tcs_ok ? "OK" : "N/A");
     
     // === Servo ===
     printf("[6/7] Servo...");
@@ -963,8 +1159,8 @@ int main() {
         read_sensors();
         display_main();
         
-        printf("#%d T=%.1fC H=%.1f%% D=%dmm N=%.0f%% V=%.1fL R:%c%c%c W:%s\n",
-               g_count, g_temp, g_hum, g_dist, g_nivel, g_volume,
+        printf("#%d T=%.1fC H=%.1f%% D=%dmm N=%.0f%% V=%.1fL C=%s R:%c%c%c W:%s\n",
+               g_count, g_temp, g_hum, g_dist, g_nivel, g_volume, g_cor_nome,
                g_relay_ln1 ? '1' : '-', g_relay_ln2 ? '2' : '-', g_relay_ln3 ? '3' : '-',
                g_wifi ? "OK" : "OFF");
         
