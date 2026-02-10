@@ -82,9 +82,10 @@
 // ============================================================
 // CONFIGURACAO DO TANQUE
 // ============================================================
-#define TANK_HEIGHT_MM   200.0f
-#define TANK_CAPACITY_L  20.0f
-#define TEMP_THRESHOLD   30.0f
+#define SENSOR_DIST_FULL   160   // mm - leitura do VL53L0X com tanque 100% cheio
+#define SENSOR_DIST_EMPTY  360   // mm - leitura com tanque vazio (160 + ~200mm profundidade)
+#define TANK_CAPACITY_L    20.0f // litros
+#define TEMP_THRESHOLD     30.0f
 
 // ============================================================
 // VARIAVEIS GLOBAIS
@@ -94,7 +95,7 @@ static int current_i2c_mode = 0;  // 0=nenhum, 1=sensores, 2=oled
 // Dados dos sensores
 static volatile float g_temp = 25.0f;
 static volatile float g_hum = 60.0f;
-static volatile uint16_t g_dist = 200;   // Default = TANK_HEIGHT (tanque vazio)
+static volatile uint16_t g_dist = SENSOR_DIST_EMPTY;   // Default = tanque vazio
 static volatile float g_nivel = 0.0f;
 static volatile float g_volume = 0.0f;
 
@@ -116,10 +117,8 @@ static volatile bool g_relay_ln1 = false;
 static volatile bool g_relay_ln2 = false;
 static volatile bool g_relay_ln3 = false;
 
-// Override manual: quando usuario controla rele manualmente,
-// a automacao nao interfere por MANUAL_OVERRIDE_TIME_MS
-#define MANUAL_OVERRIDE_TIME_MS (5 * 60 * 1000)  // 5 minutos
-static volatile uint32_t g_ln1_manual_override_until = 0;  // timestamp em ms
+// Override manual: quando usuario LIGA ventilador manualmente,
+// automacao NAO desliga. Mas automacao SEMPRE pode LIGAR se temp alta.
 static volatile bool g_ln1_manual = false;  // true = usuario ligou manualmente
 
 // TPA - Troca Parcial de Agua (state machine)
@@ -207,25 +206,21 @@ bool aht10_read(float *temp, float *hum) {
 
 // ============================================================
 // VL53L0X - Sensor de Distancia (com mudanca de endereco)
+// Baseado na implementacao de referencia:
+//   github.com/joao-tolomelli/pico-w-drivers/vl53l0x_exemplo
 // ============================================================
 
 static uint8_t vl53_addr = VL53L0X_ADDR;  // Endereco atual (muda para NEW_ADDR no init)
-static uint8_t vl53_stop_variable = 0;
 
 static bool vl53_write_reg(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
     return i2c_write_blocking(i2c1, vl53_addr, buf, 2, false) == 2;
 }
 
-static bool vl53_write_reg16(uint8_t reg, uint16_t val) {
-    uint8_t buf[3] = {reg, (uint8_t)(val >> 8), (uint8_t)(val & 0xFF)};
-    return i2c_write_blocking(i2c1, vl53_addr, buf, 3, false) == 3;
-}
-
 static uint8_t vl53_read_reg(uint8_t reg) {
     uint8_t val = 0;
-    i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true);
-    i2c_read_blocking(i2c1, vl53_addr, &val, 1, false);
+    if (i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true) < 0) return 0;
+    if (i2c_read_blocking(i2c1, vl53_addr, &val, 1, false) < 0) return 0;
     return val;
 }
 
@@ -233,86 +228,64 @@ bool vl53_init(void) {
     i2c_switch_to_sensors();
     sleep_ms(100);
     
-    vl53_addr = VL53L0X_ADDR;
+    // === CONFLITO I2C: VL53L0X e TCS34725 ambos em 0x29 ===
+    // Estrategia: mudar endereco do VL53L0X primeiro, confirmar depois.
     
-    // Verifica presenca no endereco padrao
-    uint8_t dummy;
-    if (i2c_read_blocking(i2c1, vl53_addr, &dummy, 1, false) < 0) {
-        // Talvez ja esteja no novo endereco (boot anterior)
-        vl53_addr = VL53L0X_NEW_ADDR;
-        if (i2c_read_blocking(i2c1, vl53_addr, &dummy, 1, false) < 0) {
-            printf("   VL53L0X: nao encontrado\n");
+    // 1) Tenta no novo endereco (caso ja tenha sido mudado em boot anterior)
+    vl53_addr = VL53L0X_NEW_ADDR;  // 0x30
+    uint8_t id = vl53_read_reg(0xC0);
+    if (id == 0xEE) {
+        printf("   VL53L0X ja em 0x%02X (ID=0xEE)\n", vl53_addr);
+    } else {
+        // 2) VL53L0X ainda em 0x29 — muda endereco "cegamente"
+        vl53_addr = VL53L0X_ADDR;  // 0x29
+        vl53_write_reg(0x8A, VL53L0X_NEW_ADDR);
+        sleep_ms(20);
+        
+        // 3) Confirma no novo endereco
+        vl53_addr = VL53L0X_NEW_ADDR;  // 0x30
+        id = vl53_read_reg(0xC0);
+        printf("   VL53L0X addr 0x29->0x%02X ID=0x%02X\n", VL53L0X_NEW_ADDR, id);
+        if (id != 0xEE) {
+            printf("   VL53L0X: falha apos mudanca de endereco\n");
             return false;
         }
-        printf("   VL53L0X ja em 0x%02X\n", vl53_addr);
     }
     
-    // Verifica ID (deve ser 0xEE)
-    uint8_t id = vl53_read_reg(0xC0);
-    printf("   VL53L0X ID: 0x%02X\n", id);
-    if (id != 0xEE) return false;
-    
-    // Data init (sequencia simplificada baseada na lib Pololu)
-    vl53_write_reg(0x88, 0x00);  // Modo 2V8
-    
-    // Configuracao de GPIO/interrupcao
-    vl53_write_reg(0x80, 0x01);
-    vl53_write_reg(0xFF, 0x01);
-    vl53_write_reg(0x00, 0x00);
-    vl53_stop_variable = vl53_read_reg(0x91);
-    vl53_write_reg(0x00, 0x01);
-    vl53_write_reg(0xFF, 0x00);
-    vl53_write_reg(0x80, 0x00);
-    
-    // Configura interrupcao ativa baixa
-    uint8_t cfg = vl53_read_reg(0x0A);
-    vl53_write_reg(0x0A, cfg & ~0x10);
-    vl53_write_reg(0x0B, 0x01);  // Limpa interrupcao
-    
-    // Sequence config e rate limit
-    vl53_write_reg(0x01, 0xE8);
-    vl53_write_reg16(0x44, 0x0020);  // Signal rate limit 0.25 MCPS
-    
-    // Muda endereco I2C para liberar 0x29 para TCS34725
-    if (vl53_addr == VL53L0X_ADDR) {
-        vl53_write_reg(0x8A, VL53L0X_NEW_ADDR);
-        vl53_addr = VL53L0X_NEW_ADDR;
-        sleep_ms(10);
-        printf("   VL53L0X addr -> 0x%02X\n", vl53_addr);
-    }
-    
+    // Agora VL53L0X esta em 0x30, TCS34725 fica sozinho em 0x29
+    printf("   VL53L0X: inicializado em 0x%02X OK\n", vl53_addr);
     return true;
 }
 
 uint16_t vl53_read(void) {
     i2c_switch_to_sensors();
     
-    // Sequencia de inicio de medicao single-shot (com stop_variable)
-    vl53_write_reg(0x80, 0x01);
-    vl53_write_reg(0xFF, 0x01);
-    vl53_write_reg(0x00, 0x00);
-    vl53_write_reg(0x91, vl53_stop_variable);
-    vl53_write_reg(0x00, 0x01);
-    vl53_write_reg(0xFF, 0x00);
-    vl53_write_reg(0x80, 0x00);
-    vl53_write_reg(0x00, 0x01);  // SYSRANGE_START = single shot
+    // Inicia medicao unica (single-shot) - metodo simples e comprovado
+    // REG_SYSRANGE_START (0x00) = 0x01
+    uint8_t cmd[2] = {0x00, 0x01};
+    if (i2c_write_blocking(i2c1, vl53_addr, cmd, 2, false) != 2)
+        return 0xFFFF;
     
-    // Aguarda conclusao da medicao (poll registro 0x13)
-    for (int i = 0; i < 200; i++) {
-        uint8_t status = vl53_read_reg(0x13);
-        if (status & 0x07) break;
-        sleep_ms(1);
-        if (i == 199) return 0xFFFF;  // Timeout
+    // Aguarda resultado - poll REG_RESULT_RANGE_STATUS (0x14) bit 0
+    for (int i = 0; i < 100; i++) {
+        uint8_t reg = 0x14;
+        uint8_t status = 0;
+        if (i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true) < 0)
+            return 0xFFFF;
+        if (i2c_read_blocking(i2c1, vl53_addr, &status, 1, false) < 0)
+            return 0xFFFF;
+        if (status & 0x01) break;  // Medicao pronta
+        sleep_ms(5);
+        if (i == 99) return 0xFFFF;  // Timeout
     }
     
-    // Le distancia (RESULT_RANGE_STATUS + 10 = 0x1E)
+    // Le 2 bytes da distancia em REG_RESULT_RANGE_MM (0x1E)
     uint8_t reg = 0x1E;
     uint8_t buf[2] = {0, 0};
-    i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true);
-    i2c_read_blocking(i2c1, vl53_addr, buf, 2, false);
-    
-    // Limpa interrupcao
-    vl53_write_reg(0x0B, 0x01);
+    if (i2c_write_blocking(i2c1, vl53_addr, &reg, 1, true) < 0)
+        return 0xFFFF;
+    if (i2c_read_blocking(i2c1, vl53_addr, buf, 2, false) < 0)
+        return 0xFFFF;
     
     uint16_t dist = (buf[0] << 8) | buf[1];
     if (dist == 0 || dist > 2000 || dist == 8190) return 0xFFFF;
@@ -321,6 +294,8 @@ uint16_t vl53_read(void) {
 
 // ============================================================
 // TCS34725 - Sensor de Cor RGB
+// Baseado na implementacao de referencia:
+//   github.com/joao-tolomelli/pico-w-drivers/TCS34725
 // ============================================================
 
 static bool tcs_write_reg(uint8_t reg, uint8_t val) {
@@ -337,11 +312,11 @@ static uint8_t tcs_read_reg(uint8_t reg) {
 }
 
 static uint16_t tcs_read_reg16(uint8_t reg) {
-    uint8_t cmd = TCS34725_CMD | 0x20 | reg;  // Auto-increment
+    uint8_t cmd = TCS34725_CMD | reg;
     uint8_t buf[2] = {0, 0};
     i2c_write_blocking(i2c1, TCS34725_ADDR, &cmd, 1, true);
     i2c_read_blocking(i2c1, TCS34725_ADDR, buf, 2, false);
-    return (uint16_t)(buf[1] << 8) | buf[0];  // Little-endian
+    return (uint16_t)(buf[1] << 8) | buf[0];  // Little-endian (TCS34725)
 }
 
 bool tcs_init(void) {
@@ -360,53 +335,61 @@ bool tcs_init(void) {
     printf("   TCS34725 ID: 0x%02X\n", id);
     if (id != 0x44 && id != 0x4D) return false;
     
-    // ATIME = 0xD5 -> ~101ms integracao (10-bit)
-    tcs_write_reg(0x01, 0xD5);
-    // Ganho 4x (0x01)
-    tcs_write_reg(0x0F, 0x01);
-    // Power ON
+    // Configuracao baseada na referencia (joao-tolomelli)
+    // ATIME = 0xC0 -> ~154ms integracao (bom equilibrio velocidade/precisao)
+    tcs_write_reg(0x01, 0xC0);
+    // Ganho 16x (0x02) - igual a referencia, mais sensivel
+    tcs_write_reg(0x0F, 0x02);
+    // Power ON (PON)
     tcs_write_reg(0x00, 0x01);
-    sleep_ms(3);
-    // Power ON + ADC Enable
+    sleep_ms(3);  // Minimo 2.4ms apos PON
+    // Power ON + ADC Enable (PON + AEN)
     tcs_write_reg(0x00, 0x03);
-    sleep_ms(154);  // Aguarda primeiro ciclo de integracao
+    sleep_ms(160);  // Aguarda primeiro ciclo de integracao (154ms)
     
-    printf("   TCS34725: configurado OK\n");
+    printf("   TCS34725: configurado OK (ATIME=0xC0, Gain=16x)\n");
     return true;
 }
 
 void tcs_read_color(void) {
     i2c_switch_to_sensors();
     
-    // Verifica se dados estao prontos (AVALID bit)
+    // Verifica se dados estao prontos (AVALID bit no STATUS register)
     uint8_t status = tcs_read_reg(0x13);
     if (!(status & 0x01)) return;
     
-    // Le valores RGBC
+    // Le valores RGBC (16-bit little-endian)
     g_cor_c = tcs_read_reg16(0x14);  // Clear
     g_cor_r = tcs_read_reg16(0x16);  // Red
     g_cor_g = tcs_read_reg16(0x18);  // Green
     g_cor_b = tcs_read_reg16(0x1A);  // Blue
     
     // Classifica cor para qualidade da agua
-    if (g_cor_c < 200) {
+    if (g_cor_c < 100) {
         snprintf(g_cor_nome, sizeof(g_cor_nome), "Escuro");
-    } else if (g_cor_c > 4000) {
+    } else if (g_cor_c > 10000) {
         snprintf(g_cor_nome, sizeof(g_cor_nome), "Cristalino");
     } else {
-        float r_ratio = (float)g_cor_r / (float)g_cor_c;
-        float g_ratio = (float)g_cor_g / (float)g_cor_c;
-        float b_ratio = (float)g_cor_b / (float)g_cor_c;
+        // Normaliza RGB para 0-255 (como na referencia)
+        uint8_t r8 = (uint8_t)((uint32_t)g_cor_r * 255 / g_cor_c);
+        uint8_t g8 = (uint8_t)((uint32_t)g_cor_g * 255 / g_cor_c);
+        uint8_t b8 = (uint8_t)((uint32_t)g_cor_b * 255 / g_cor_c);
+        if (r8 > 255) r8 = 255;
+        if (g8 > 255) g8 = 255;
+        if (b8 > 255) b8 = 255;
         
-        if (g_ratio > 0.35f && g_ratio > r_ratio && g_ratio > b_ratio) {
-            snprintf(g_cor_nome, sizeof(g_cor_nome), "Verde");
-        } else if (r_ratio > 0.35f && r_ratio > g_ratio * 1.3f) {
+        // Classificacao baseada em valores normalizados
+        if (r8 > g8 + 30 && r8 > b8 + 30) {
             snprintf(g_cor_nome, sizeof(g_cor_nome), "Vermelho");
-        } else if (b_ratio > 0.35f && b_ratio > r_ratio && b_ratio > g_ratio) {
+        } else if (g8 > r8 + 15 && g8 > b8 + 15) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Verde");
+        } else if (b8 > r8 + 15 && b8 > g8 + 15) {
             snprintf(g_cor_nome, sizeof(g_cor_nome), "Azul");
-        } else if (r_ratio > 0.30f && g_ratio > 0.30f && b_ratio < 0.25f) {
+        } else if (r8 > 100 && g8 > 100 && b8 < 80) {
             snprintf(g_cor_nome, sizeof(g_cor_nome), "Amarelado");
-        } else if (g_cor_c > 2000) {
+        } else if (r8 > 120 && g8 > 120 && b8 > 120) {
+            snprintf(g_cor_nome, sizeof(g_cor_nome), "Cristalino");
+        } else if (g_cor_c > 3000) {
             snprintf(g_cor_nome, sizeof(g_cor_nome), "Cristalino");
         } else {
             snprintf(g_cor_nome, sizeof(g_cor_nome), "Turvo");
@@ -660,17 +643,65 @@ void relay_init(void) {
     gpio_init(RELAY_LN1_PIN); gpio_set_dir(RELAY_LN1_PIN, GPIO_OUT); gpio_put(RELAY_LN1_PIN, 0);
     gpio_init(RELAY_LN2_PIN); gpio_set_dir(RELAY_LN2_PIN, GPIO_OUT); gpio_put(RELAY_LN2_PIN, 0);
     gpio_init(RELAY_LN3_PIN); gpio_set_dir(RELAY_LN3_PIN, GPIO_OUT); gpio_put(RELAY_LN3_PIN, 0);
+    // Configura drive strength alto para manter estabilidade sob carga
+    gpio_set_drive_strength(RELAY_LN1_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(RELAY_LN2_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(RELAY_LN3_PIN, GPIO_DRIVE_STRENGTH_12MA);
+}
+
+// Re-afirma TODOS os GPIOs dos reles para o estado desejado em software
+// Corrige corrupcao por queda de tensao ao acionar multiplos reles
+static void relay_refresh_all(void) {
+    gpio_put(RELAY_LN1_PIN, g_relay_ln1);
+    gpio_put(RELAY_LN2_PIN, g_relay_ln2);
+    gpio_put(RELAY_LN3_PIN, g_relay_ln3);
 }
 
 void relay_set(int relay, bool state) {
-    switch (relay) {
-        case 1: g_relay_ln1 = state; gpio_put(RELAY_LN1_PIN, state); break;
-        case 2: g_relay_ln2 = state; gpio_put(RELAY_LN2_PIN, state); break;
-        case 3: g_relay_ln3 = state; gpio_put(RELAY_LN3_PIN, state); break;
+    // Antes de mudar: desliga TODOS brevemente para evitar pico de corrente
+    // simultaneo que corrompe os GPIOs
+    bool was_ln1 = g_relay_ln1, was_ln2 = g_relay_ln2, was_ln3 = g_relay_ln3;
+    
+    // Se estamos LIGANDO um rele e ja tem outro ligado, faz escalonamento
+    if (state && (was_ln1 || was_ln2 || was_ln3)) {
+        // Desliga todos momentaneamente
+        gpio_put(RELAY_LN1_PIN, 0);
+        gpio_put(RELAY_LN2_PIN, 0);
+        gpio_put(RELAY_LN3_PIN, 0);
+        sleep_ms(100);  // Deixa bobinas relaxarem
+        
+        // Atualiza estado desejado
+        switch (relay) {
+            case 1: g_relay_ln1 = state; break;
+            case 2: g_relay_ln2 = state; break;
+            case 3: g_relay_ln3 = state; break;
+        }
+        
+        // Re-liga um por um com delay (escalonamento)
+        if (g_relay_ln1) { gpio_put(RELAY_LN1_PIN, 1); sleep_ms(300); }
+        if (g_relay_ln2) { gpio_put(RELAY_LN2_PIN, 1); sleep_ms(300); }
+        if (g_relay_ln3) { gpio_put(RELAY_LN3_PIN, 1); sleep_ms(300); }
+    } else {
+        // Caso simples: ligando o primeiro rele, ou desligando
+        switch (relay) {
+            case 1: g_relay_ln1 = state; break;
+            case 2: g_relay_ln2 = state; break;
+            case 3: g_relay_ln3 = state; break;
+        }
+        switch (relay) {
+            case 1: gpio_put(RELAY_LN1_PIN, state); break;
+            case 2: gpio_put(RELAY_LN2_PIN, state); break;
+            case 3: gpio_put(RELAY_LN3_PIN, state); break;
+        }
+        sleep_ms(100);
+        // Re-afirma todos para garantir estabilidade
+        relay_refresh_all();
     }
-    printf("[RELAY] LN%d=%s (GPIO%d)\n", relay,
-           state ? "ON" : "OFF",
-           relay == 1 ? RELAY_LN1_PIN : relay == 2 ? RELAY_LN2_PIN : RELAY_LN3_PIN);
+    
+    printf("[RELAY] LN%d=%s (GPIO%d) | Estado: LN1=%d LN2=%d LN3=%d\n", 
+           relay, state ? "ON" : "OFF",
+           relay == 1 ? RELAY_LN1_PIN : relay == 2 ? RELAY_LN2_PIN : RELAY_LN3_PIN,
+           g_relay_ln1, g_relay_ln2, g_relay_ln3);
 }
 
 // ============================================================
@@ -973,11 +1004,9 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
             }
             // Marca controle manual para o rele 1 (ventilador)
             if (relay_num == 1) {
-                g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
                 // Se usuario LIGOU manualmente, flag fica true ate desligar
-                bool ln1_now = g_relay_ln1;
-                g_ln1_manual = ln1_now;
-                printf("[RELAY] LN1 manual=%s\n", ln1_now ? "ON" : "OFF");
+                g_ln1_manual = g_relay_ln1;
+                printf("[RELAY] LN1 manual=%s\n", g_relay_ln1 ? "ON" : "OFF");
             }
         }
         snprintf(json_buf, sizeof(json_buf),
@@ -1034,11 +1063,16 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         tcp_write(tpcb, http_resp, send_len, 0);
     }
     else if (strstr(request, "POST /all-on")) {
-        relay_set(1, true); sleep_ms(500);
-        relay_set(2, true); sleep_ms(500);
-        relay_set(3, true);
+        // Escalonamento: liga um por um com relay_set (que ja tem logica interna)
+        g_relay_ln1 = false; g_relay_ln2 = false; g_relay_ln3 = false;
+        gpio_put(RELAY_LN1_PIN, 0); gpio_put(RELAY_LN2_PIN, 0); gpio_put(RELAY_LN3_PIN, 0);
+        sleep_ms(200);
+        g_relay_ln1 = true; gpio_put(RELAY_LN1_PIN, 1); sleep_ms(500);
+        g_relay_ln2 = true; gpio_put(RELAY_LN2_PIN, 1); sleep_ms(500);
+        g_relay_ln3 = true; gpio_put(RELAY_LN3_PIN, 1); sleep_ms(200);
+        relay_refresh_all();  // Re-afirma tudo
         g_ln1_manual = true;
-        g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
+        printf("[RELAY] ALL-ON escalonado: LN1=%d LN2=%d LN3=%d\n", g_relay_ln1, g_relay_ln2, g_relay_ln3);
         snprintf(json_buf, sizeof(json_buf),
             "{\"success\":true,\"relays\":{\"LN1\":true,\"LN2\":true,\"LN3\":true}}");
         snprintf(http_resp, sizeof(http_resp),
@@ -1048,10 +1082,13 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         tcp_write(tpcb, http_resp, send_len, 0);
     }
     else if (strstr(request, "POST /all-off")) {
-        relay_set(1, false); relay_set(2, false); relay_set(3, false);
+        g_relay_ln1 = false; g_relay_ln2 = false; g_relay_ln3 = false;
+        gpio_put(RELAY_LN1_PIN, 0); gpio_put(RELAY_LN2_PIN, 0); gpio_put(RELAY_LN3_PIN, 0);
+        sleep_ms(100);
+        relay_refresh_all();
         g_tpa_active = false; g_tpa_phase = 0;  // Cancela TPA tambem
         g_ln1_manual = false;
-        g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
+        printf("[RELAY] ALL-OFF: LN1=%d LN2=%d LN3=%d\n", g_relay_ln1, g_relay_ln2, g_relay_ln3);
         snprintf(json_buf, sizeof(json_buf),
             "{\"success\":true,\"relays\":{\"LN1\":false,\"LN2\":false,\"LN3\":false}}");
         snprintf(http_resp, sizeof(http_resp),
@@ -1163,27 +1200,31 @@ void read_sensors(void) {
         }
     }
     
-    // Calcula nivel e volume
-    float water_h = TANK_HEIGHT_MM - (float)g_dist;
-    if (water_h < 0) water_h = 0;
-    g_nivel = (water_h / TANK_HEIGHT_MM) * 100.0f;
+    // Calcula nivel e volume baseado na calibracao do sensor
+    // dist=160mm -> 100% cheio, dist=360mm -> 0% vazio
+    g_nivel = 100.0f * (float)(SENSOR_DIST_EMPTY - g_dist) / (float)(SENSOR_DIST_EMPTY - SENSOR_DIST_FULL);
+    if (g_nivel < 0) g_nivel = 0;
     if (g_nivel > 100) g_nivel = 100;
     g_volume = (g_nivel / 100.0f) * TANK_CAPACITY_L;
     
     // Automacao: liga ventilador se temp alta
-    // Se usuario ligou manualmente, automacao NAO desliga
-    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-    bool manual_override = g_ln1_manual || (now_ms < g_ln1_manual_override_until);
-    
-    if (!manual_override) {
-        if (g_temp > TEMP_THRESHOLD && !g_relay_ln1) {
-            relay_set(1, true);
-            printf("[AUTO] Ventilador ON (T>%.0f)\n", TEMP_THRESHOLD);
-        } else if (g_temp <= (TEMP_THRESHOLD - 1.0f) && g_relay_ln1) {
-            relay_set(1, false);
-            printf("[AUTO] Ventilador OFF\n");
+    // SEMPRE liga se temperatura exceder o limite - independente de qualquer override
+    // So desliga automaticamente se usuario NAO ligou manualmente
+    if (g_temp > TEMP_THRESHOLD && !g_relay_ln1) {
+        // Escalonamento: se outro rele ja esta ligado, aguarda 500ms
+        // para evitar pico de corrente que causa acionamento erratico
+        if (g_relay_ln2 || g_relay_ln3) {
+            printf("[AUTO] Escalonamento: aguardando 500ms (outro rele ativo)\n");
+            sleep_ms(500);
         }
+        relay_set(1, true);
+        printf("[AUTO] Ventilador ON (T=%.1f > %.0f) GPIO%d\n", g_temp, TEMP_THRESHOLD, RELAY_LN1_PIN);
+    } else if (g_temp <= (TEMP_THRESHOLD - 1.0f) && g_relay_ln1 && !g_ln1_manual) {
+        relay_set(1, false);
+        printf("[AUTO] Ventilador OFF (T=%.1f <= %.0f)\n", g_temp, TEMP_THRESHOLD - 1.0f);
     }
+    
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
     
     // TPA - Troca Parcial de Agua (state machine)
     if (g_tpa_active) {
@@ -1339,6 +1380,10 @@ int main() {
         if (g_wifi) {
             led_set(0, 1, 0); sleep_ms(100); led_set(0, 0, 0);
         }
+        
+        // Refresh periodico dos GPIOs dos reles
+        // Corrige qualquer corrupcao por instabilidade eletrica
+        relay_refresh_all();
         
         // Poll WiFi frequentemente por ~2 segundos
         // Isso garante que dados TCP sejam transmitidos/recebidos
