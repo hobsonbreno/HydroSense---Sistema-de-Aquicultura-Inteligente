@@ -945,12 +945,17 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         tcp_write(tpcb, http_resp, send_len, 0);
     }
     else if (strstr(request, "POST /relay")) {
-        // Parse relay number com mais precisao
+        // Parse relay number - suporta JSON e URL-encoded
         int relay_num = 0;
         char *rp = strstr(request, "\"relay\"");
         if (rp) {
             rp = strchr(rp, ':');
             if (rp) relay_num = atoi(rp + 1);
+        }
+        if (!relay_num) {
+            // Tenta formato URL-encoded: relay=1&state=1
+            rp = strstr(request, "relay=");
+            if (rp) relay_num = atoi(rp + 6);
         }
         
         if (relay_num >= 1 && relay_num <= 3) {
@@ -962,7 +967,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
                 }
             } else {
                 bool state = (strstr(request, "\"state\":1") != NULL) ||
-                             (strstr(request, "\"estado\":true") != NULL);
+                             (strstr(request, "\"estado\":true") != NULL) ||
+                             (strstr(request, "state=1") != NULL);
                 relay_set(relay_num, state);
             }
             // Marca controle manual para o rele 1 (ventilador)
@@ -995,25 +1001,8 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         send_len = strlen(http_resp);
         tcp_write(tpcb, http_resp, send_len, 0);
     }
-    else if (strstr(request, "POST /tpa")) {
-        // Inicia TPA - Troca Parcial de Agua
-        if (!g_tpa_active) {
-            g_tpa_active = true;
-            g_tpa_phase = 1;  // Fase 1: drenando
-            relay_set(2, true);  // Liga bomba 1 (drenar)
-            relay_set(3, false); // Garante bomba 2 desligada
-            printf("[TPA] INICIADO - Drenando ate %.0f%%\n", TPA_DRAIN_TARGET);
-        }
-        snprintf(json_buf, sizeof(json_buf),
-            "{\"success\":true,\"tpa\":{\"active\":true,\"phase\":%d},\"message\":\"TPA iniciada\"}", g_tpa_phase);
-        snprintf(http_resp, sizeof(http_resp),
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
-            (int)strlen(json_buf), json_buf);
-        send_len = strlen(http_resp);
-        tcp_write(tpcb, http_resp, send_len, 0);
-    }
     else if (strstr(request, "POST /tpa-stop")) {
-        // Para TPA manualmente
+        // Para TPA manualmente - DEVE vir antes de /tpa!
         g_tpa_active = false;
         g_tpa_phase = 0;
         relay_set(2, false);
@@ -1021,6 +1010,26 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         printf("[TPA] PARADO manualmente\n");
         snprintf(http_resp, sizeof(http_resp),
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: 52\r\n\r\n{\"success\":true,\"message\":\"TPA parada com sucesso\"}");
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "POST /tpa")) {
+        // Inicia TPA - Troca Parcial de Agua
+        if (!g_tpa_active && g_vl53_ok && g_nivel > 5.0f) {
+            g_tpa_active = true;
+            g_tpa_phase = 1;  // Fase 1: drenando
+            relay_set(2, true);  // Liga bomba 1 (drenar)
+            relay_set(3, false); // Garante bomba 2 desligada
+            printf("[TPA] INICIADO - Drenando ate %.0f%% (nivel atual=%.1f%%)\n", TPA_DRAIN_TARGET, g_nivel);
+        } else if (!g_vl53_ok || g_nivel <= 5.0f) {
+            printf("[TPA] REJEITADO - sensor=%s nivel=%.1f%%\n", g_vl53_ok?"OK":"FALHA", g_nivel);
+        }
+        snprintf(json_buf, sizeof(json_buf),
+            "{\"success\":true,\"tpa\":{\"active\":%s,\"phase\":%d},\"message\":\"TPA %s\"}",
+            g_tpa_active?"true":"false", g_tpa_phase, g_tpa_active?"iniciada":"rejeitada - sensor indisponivel");
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
+            (int)strlen(json_buf), json_buf);
         send_len = strlen(http_resp);
         tcp_write(tpcb, http_resp, send_len, 0);
     }
@@ -1123,19 +1132,35 @@ void read_sensors(void) {
         g_aht_ok = true;
     }
     
-    // VL53L0X
+    // VL53L0X - com retentativa de init
     if (g_vl53_ok) {
         uint16_t dist = vl53_read();
         if (dist != 0xFFFF && dist < 2000) {
             g_dist = dist;
         } else {
-            printf("[VL53] Falha leitura (0x%04X)\n", dist);
+            printf("[VL53] Falha leitura (0x%04X) - retentando init\n", dist);
+            g_vl53_ok = vl53_init();
+        }
+    } else {
+        // Sensor nao estava OK, tenta re-iniciar
+        static int vl53_retry_count = 0;
+        if (++vl53_retry_count >= 5) {
+            vl53_retry_count = 0;
+            printf("[VL53] Retentando inicializacao...\n");
+            g_vl53_ok = vl53_init();
         }
     }
     
-    // TCS34725
+    // TCS34725 - com retentativa
     if (g_tcs_ok) {
         tcs_read_color();
+    } else {
+        static int tcs_retry_count = 0;
+        if (++tcs_retry_count >= 5) {
+            tcs_retry_count = 0;
+            printf("[TCS] Retentando inicializacao...\n");
+            g_tcs_ok = tcs_init();
+        }
     }
     
     // Calcula nivel e volume

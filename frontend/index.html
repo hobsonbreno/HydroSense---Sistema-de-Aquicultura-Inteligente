@@ -814,8 +814,8 @@
                         for (let i = 1; i <= 3; i++) {
                             await fetch('http://' + PICO_IP + '/relay', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'text/plain' },
-                                body: 'relay=' + i + '&state=1',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ relay: i, state: 1 }),
                                 signal: AbortSignal.timeout(3000)
                             });
                             relayStates['LN'+i] = true;
@@ -890,8 +890,8 @@
                 // Liga Bomba 1 (LN2) diretamente no Pico para TPA
                 try {
                     await fetch('http://' + PICO_IP + '/relay', {
-                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                        body: 'relay=2&state=1', signal: AbortSignal.timeout(2000)
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ relay: 2, state: 1 }), signal: AbortSignal.timeout(2000)
                     });
                 } catch(e) {}
                 relayStates.LN2 = true;
@@ -920,12 +920,12 @@
                 // Também desliga os relés LN2 e LN3 diretamente no Pico
                 try {
                     await fetch('http://' + PICO_IP + '/relay', {
-                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                        body: 'relay=2&state=0', signal: AbortSignal.timeout(2000)
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ relay: 2, state: 0 }), signal: AbortSignal.timeout(2000)
                     });
                     await fetch('http://' + PICO_IP + '/relay', {
-                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                        body: 'relay=3&state=0', signal: AbortSignal.timeout(2000)
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ relay: 3, state: 0 }), signal: AbortSignal.timeout(2000)
                     });
                 } catch(e) {}
                 relayStates.LN2 = false; relayStates.LN3 = false;
