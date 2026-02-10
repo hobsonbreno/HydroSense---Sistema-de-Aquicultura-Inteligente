@@ -169,6 +169,18 @@
             font-style: italic; line-height: 1.2;
             min-height: 16px;
         }
+        .relay-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        /* TPA Status */
+        .tpa-status {
+            margin-top: 14px; padding: 14px; border-radius: 12px;
+            background: rgba(52,152,219,0.15); border: 1px solid rgba(52,152,219,0.3);
+            display: none; text-align: center;
+        }
+        .tpa-status.active { display: block; animation: pulse-alert 2s infinite; }
+        .tpa-phase { font-size: 1.1rem; font-weight: 700; color: #3498db; }
+        .tpa-progress { margin-top: 8px; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }
+        .tpa-progress-fill { height: 100%; border-radius: 4px; background: #3498db; transition: width 0.5s; }
+        }
 
         /* ===== ALIMENTAÇÃO ===== */
         .feed-section { text-align: center; }
@@ -312,7 +324,7 @@
                         <div class="relay-sub">Motor LN1 · GPIO 17</div>
                         <div class="relay-status-badge badge-off" id="relayBadge1">○ OFF</div>
                         <button class="relay-btn off" id="relayBtn1" onclick="toggleRelay(1)">LIGAR</button>
-                        <div class="auto-label" id="relayAuto1" style="display:none">⚡ Automação (T &gt; 29°C)</div>
+                        <div class="auto-label" id="relayAuto1" style="display:none">⚡ Automação (T &gt; 30°C)</div>
                     </div>
                     <!-- LN2 - Bomba 1 (Esvaziar / TPA) -->
                     <div class="relay-card" id="relayCard2">
@@ -332,6 +344,39 @@
                         <button class="relay-btn off" id="relayBtn3" onclick="toggleRelay(3)">LIGAR</button>
                         <div class="auto-label" id="relayAuto3" style="display:none">🔄 Reabastecimento</div>
                     </div>
+                </div>
+                <div class="relay-grid" style="margin-top: 18px;">
+                    <!-- Ligar Tudo -->
+                    <div class="relay-card" id="cardAllOn">
+                        <div class="relay-icon">✅</div>
+                        <div class="relay-name">Ligar Tudo</div>
+                        <div class="relay-sub">Ativa todos os relés</div>
+                        <div class="relay-status-badge badge-off" style="visibility:hidden">&nbsp;</div>
+                        <button class="relay-btn on" onclick="allRelays(true)">LIGAR TUDO</button>
+                    </div>
+                    <!-- Desligar Tudo -->
+                    <div class="relay-card" id="cardAllOff">
+                        <div class="relay-icon">⛔</div>
+                        <div class="relay-name">Desligar Tudo</div>
+                        <div class="relay-sub">Desativa todos os relés</div>
+                        <div class="relay-status-badge badge-off" style="visibility:hidden">&nbsp;</div>
+                        <button class="relay-btn off" onclick="allRelays(false)">DESLIGAR TUDO</button>
+                    </div>
+                    <!-- TPA Manual -->
+                    <div class="relay-card" id="cardTpa">
+                        <div class="relay-icon">🔄</div>
+                        <div class="relay-name">TPA Manual</div>
+                        <div class="relay-sub">Troca Parcial de Água</div>
+                        <div class="relay-status-badge badge-off" id="tpaBadge">○ INATIVO</div>
+                        <button class="relay-btn on" id="btnTpa" onclick="startTPA()">INICIAR TPA</button>
+                        <div class="auto-label" id="tpaPhaseLabel" style="display:none">🔄 Fase em andamento</div>
+                    </div>
+                </div>
+                <div class="tpa-status" id="tpaStatus">
+                    <div class="tpa-phase" id="tpaPhaseText">🔄 TPA em andamento...</div>
+                    <div class="tpa-progress"><div class="tpa-progress-fill" id="tpaProgress" style="width:0%"></div></div>
+                    <p style="margin-top:8px;font-size:0.8rem;color:#a0b8cc" id="tpaDetail">Fase 1: Drenando até 25%</p>
+                    <button class="relay-btn off" onclick="stopTPA()" style="margin-top:10px;width:auto;padding:10px 28px">⏹ PARAR TPA</button>
                 </div>
             </div>
 
@@ -389,7 +434,7 @@
         const PICO_IP       = '10.0.0.181';
         const BACKEND_URL   = 'http://localhost:3000';
         const UPDATE_INTERVAL = 2000;   // polling 2s
-        const TEMP_THRESHOLD  = 29.0;   // limiar do ventilador
+        const TEMP_THRESHOLD  = 30.0;   // limiar do ventilador
 
         // Estado global
         let relayStates     = { LN1: false, LN2: false, LN3: false };
@@ -399,6 +444,7 @@
         let firstRun        = true;     // evitar voz na inicialização
         let voiceEnabled    = true;
         let lastVoiceTime   = {};
+        let tpaActive       = false;
 
         // ================================================================
         // SÍNTESE DE VOZ — Web Speech API
@@ -466,6 +512,17 @@
                                           { signal: AbortSignal.timeout(3000) });
                     if (r.ok) {
                         const data = await r.json();
+                        // Se Pico nao tem campo tpa, buscar do backend
+                        if (!data.tpa) {
+                            try {
+                                const rb = await fetch(BACKEND_URL + '/sensors',
+                                                       { signal: AbortSignal.timeout(2000) });
+                                if (rb.ok) {
+                                    const bdata = await rb.json();
+                                    if (bdata.tpa) data.tpa = bdata.tpa;
+                                }
+                            } catch(e) {}
+                        }
                         processData(data, 'pico');
                         return;
                     }
@@ -523,6 +580,57 @@
             document.getElementById('corIndicator').style.background = corColors[corAgua] || '#666';
             document.getElementById('readCount').textContent = data.contadorLeituras || 0;
             document.getElementById('deviceIp').textContent  = data.deviceIp || PICO_IP;
+
+            // TPA Status
+            if (data.tpa) {
+                tpaActive = data.tpa.active;
+                const tpaSt = document.getElementById('tpaStatus');
+                const btnTpa = document.getElementById('btnTpa');
+                const tpaBadge = document.getElementById('tpaBadge');
+                const cardTpa = document.getElementById('cardTpa');
+                const tpaLabel = document.getElementById('tpaPhaseLabel');
+                if (data.tpa.active) {
+                    tpaSt.classList.add('active');
+                    cardTpa.classList.add('active');
+                    btnTpa.disabled = true;
+                    btnTpa.textContent = 'TPA ATIVO';
+                    btnTpa.className = 'relay-btn off';
+                    tpaBadge.textContent = '● ATIVO';
+                    tpaBadge.className = 'relay-status-badge badge-on';
+                    const phase = data.tpa.phase;
+                    const phaseText = document.getElementById('tpaPhaseText');
+                    const tpaDetail = document.getElementById('tpaDetail');
+                    const tpaProg = document.getElementById('tpaProgress');
+                    if (phase === 1) {
+                        phaseText.textContent = '⬇️ Fase 1: Drenando água';
+                        tpaDetail.textContent = 'Bomba 1 ON — Drenando até 25% · Nível: ' + nivel.toFixed(0) + '%';
+                        tpaProg.style.width = Math.max(0, (100 - nivel) / 0.75) + '%';
+                        tpaLabel.textContent = '⬇️ Drenando até 25%';
+                        tpaLabel.style.display = '';
+                    } else if (phase === 2) {
+                        phaseText.textContent = '⬆️ Fase 2: Enchendo com água nova';
+                        tpaDetail.textContent = 'Bomba 2 ON — Enchendo até 100% · Nível: ' + nivel.toFixed(0) + '%';
+                        tpaProg.style.width = nivel + '%';
+                        tpaLabel.textContent = '⬆️ Enchendo até 100%';
+                        tpaLabel.style.display = '';
+                    } else if (phase === 3) {
+                        phaseText.textContent = '👁️ Fase 3: Monitorando nível';
+                        tpaDetail.textContent = 'Verificando estabilidade · Nível: ' + nivel.toFixed(0) + '%';
+                        tpaProg.style.width = '100%';
+                        tpaLabel.textContent = '👁️ Monitorando';
+                        tpaLabel.style.display = '';
+                    }
+                } else {
+                    tpaSt.classList.remove('active');
+                    cardTpa.classList.remove('active');
+                    btnTpa.disabled = false;
+                    btnTpa.textContent = 'INICIAR TPA';
+                    btnTpa.className = 'relay-btn on';
+                    tpaBadge.textContent = '○ INATIVO';
+                    tpaBadge.className = 'relay-status-badge badge-off';
+                    tpaLabel.style.display = 'none';
+                }
+            }
 
             // Barra de nível
             const pct = Math.min(100, Math.max(0, nivel));
@@ -689,6 +797,142 @@
                 badge.className   = 'connection-badge badge-offline';
                 badge.textContent = '🔴 Sistema Offline';
             }
+        }
+
+        // ================================================================
+        // CONTROLE RÁPIDO — LIGAR/DESLIGAR TUDO + TPA
+        // ================================================================
+        async function allRelays(state) {
+            const endpoint = state ? '/all-on' : '/all-off';
+            const label = state ? 'Ligar' : 'Desligar';
+            const delay = ms => new Promise(r => setTimeout(r, ms));
+            try {
+                if (state) {
+                    // Escalonar ativação: liga um por vez com 500ms de intervalo
+                    // para evitar sobrecarga de corrente na fonte
+                    try {
+                        for (let i = 1; i <= 3; i++) {
+                            await fetch('http://' + PICO_IP + '/relay', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'text/plain' },
+                                body: 'relay=' + i + '&state=1',
+                                signal: AbortSignal.timeout(3000)
+                            });
+                            relayStates['LN'+i] = true;
+                            updateRelayUI(i, true, false);
+                            if (i < 3) await delay(600);
+                        }
+                        addEvent('⚡ Ligar tudo (escalonado) via Pico W', '');
+                        speak('Todos os relés ligados', 'all-relay');
+                        return;
+                    } catch(e) {}
+                    // Fallback backend — escalonado
+                    for (let i = 1; i <= 3; i++) {
+                        await fetch(BACKEND_URL + '/relays/control', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tipo: 'LN'+i, estado: true, origem: 'manual' })
+                        });
+                        relayStates['LN'+i] = true;
+                        updateRelayUI(i, true, false);
+                        if (i < 3) await delay(600);
+                    }
+                    addEvent('⚡ Ligar tudo (escalonado) via Backend', '');
+                } else {
+                    // Desligar tudo — pode ser simultâneo, sem risco de sobrecarga
+                    try {
+                        const r = await fetch('http://' + PICO_IP + endpoint, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            signal: AbortSignal.timeout(3000)
+                        });
+                        if (r.ok) {
+                            const j = await r.json();
+                            if (j && j.success) {
+                                relayStates.LN1 = false; relayStates.LN2 = false; relayStates.LN3 = false;
+                                updateRelayUI(1, false, false); updateRelayUI(2, false, false); updateRelayUI(3, false, false);
+                                addEvent('⛔ Desligar tudo via Pico W', '');
+                                speak('Todos os relés desligados', 'all-relay');
+                                return;
+                            }
+                        }
+                    } catch(e) {}
+                    for (let i = 1; i <= 3; i++) {
+                        await fetch(BACKEND_URL + '/relays/control', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ tipo: 'LN'+i, estado: false, origem: 'manual' })
+                        });
+                        relayStates['LN'+i] = false;
+                        updateRelayUI(i, false, false);
+                    }
+                    addEvent('⛔ Desligar tudo via Backend', '');
+                }
+            } catch(e) { addEvent('❌ Erro ao ' + label.toLowerCase() + ' tudo', ''); }
+        }
+
+        async function startTPA() {
+            if (tpaActive) return;
+            if (!confirm('Iniciar Troca Parcial de Água (TPA)?\\n\\nIsso irá:\\n1. Drenar até 25% do tanque\\n2. Reabastecer até 100%\\n3. Monitorar nível')) return;
+            try {
+                try {
+                    const r = await fetch('http://' + PICO_IP + '/tpa', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: AbortSignal.timeout(3000)
+                    });
+                    if (r.ok) {
+                        const j = await r.json();
+                        if (j && j.success) { addEvent('🔄 TPA iniciada via Pico W', ''); speak('Troca parcial de água iniciada', 'tpa'); return; }
+                    }
+                } catch(e) {}
+                await fetch(BACKEND_URL + '/tpa', { method: 'POST' });
+                // Liga Bomba 1 (LN2) diretamente no Pico para TPA
+                try {
+                    await fetch('http://' + PICO_IP + '/relay', {
+                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                        body: 'relay=2&state=1', signal: AbortSignal.timeout(2000)
+                    });
+                } catch(e) {}
+                relayStates.LN2 = true;
+                updateRelayUI(2, true, false);
+                addEvent('🔄 TPA iniciada via Backend', '');
+                speak('Troca parcial de água iniciada', 'tpa');
+            } catch(e) { addEvent('❌ Erro ao iniciar TPA', ''); }
+        }
+
+        async function stopTPA() {
+            try {
+                // Tenta parar TPA no Pico (firmware novo)
+                try {
+                    const r = await fetch('http://' + PICO_IP + '/tpa-stop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: AbortSignal.timeout(3000)
+                    });
+                    if (r.ok) {
+                        const j = await r.json();
+                        if (j && j.success) { addEvent('⏹ TPA parada via Pico W', ''); speak('Troca parcial de água parada', 'tpa-stop'); return; }
+                    }
+                } catch(e) {}
+                // Para no backend
+                await fetch(BACKEND_URL + '/tpa-stop', { method: 'POST' });
+                // Também desliga os relés LN2 e LN3 diretamente no Pico
+                try {
+                    await fetch('http://' + PICO_IP + '/relay', {
+                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                        body: 'relay=2&state=0', signal: AbortSignal.timeout(2000)
+                    });
+                    await fetch('http://' + PICO_IP + '/relay', {
+                        method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                        body: 'relay=3&state=0', signal: AbortSignal.timeout(2000)
+                    });
+                } catch(e) {}
+                relayStates.LN2 = false; relayStates.LN3 = false;
+                updateRelayUI(2, false, false); updateRelayUI(3, false, false);
+                tpaActive = false;
+                addEvent('⏹ TPA parada via Backend', '');
+            } catch(e) { addEvent('❌ Erro ao parar TPA', ''); }
         }
 
         // ================================================================

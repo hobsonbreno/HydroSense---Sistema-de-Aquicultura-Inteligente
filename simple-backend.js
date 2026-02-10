@@ -25,6 +25,7 @@ let mockSensorData = {
   contadorLeituras: 150,
   deviceIp: '10.0.0.181',
   sensores: { aht10: true, vl53l0x: true, tcs34725: true },
+  tpa: { active: false, phase: 0 },
   timestamp: Date.now()
 };
 
@@ -235,6 +236,40 @@ app.post('/automation/water-cycle/manual', (req, res) => {
     success: true,
     message: 'Ciclo manual de troca de água iniciado com sucesso'
   });
+});
+
+// All-on / All-off endpoints
+app.post('/all-on', (req, res) => {
+  Object.keys(mockRelayStates).forEach(k => {
+    mockRelayStates[k] = { estado: true, ultimaAlteracao: new Date(), observacao: 'Ligado via all-on' };
+  });
+  console.log('⚡ Todos os relés: LIGADOS');
+  res.json({ success: true, relays: { LN1: true, LN2: true, LN3: true } });
+});
+
+app.post('/all-off', (req, res) => {
+  Object.keys(mockRelayStates).forEach(k => {
+    mockRelayStates[k] = { estado: false, ultimaAlteracao: new Date(), observacao: 'Desligado via all-off' };
+  });
+  mockSensorData.tpa = { active: false, phase: 0 };
+  console.log('⛔ Todos os relés: DESLIGADOS');
+  res.json({ success: true, relays: { LN1: false, LN2: false, LN3: false } });
+});
+
+// TPA endpoints
+app.post('/tpa', (req, res) => {
+  mockSensorData.tpa = { active: true, phase: 1 };
+  mockRelayStates.LN2 = { estado: true, ultimaAlteracao: new Date(), observacao: 'TPA - Drenando' };
+  console.log('🔄 TPA iniciada (mock)');
+  res.json({ success: true, tpa: { active: true, phase: 1 }, message: 'TPA iniciada' });
+});
+
+app.post('/tpa-stop', (req, res) => {
+  mockSensorData.tpa = { active: false, phase: 0 };
+  mockRelayStates.LN2 = { estado: false, ultimaAlteracao: new Date(), observacao: 'TPA parada' };
+  mockRelayStates.LN3 = { estado: false, ultimaAlteracao: new Date(), observacao: 'TPA parada' };
+  console.log('⏹ TPA parada (mock)');
+  res.json({ success: true, message: 'TPA parada com sucesso' });
 });
 
 // Start server

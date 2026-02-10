@@ -84,7 +84,7 @@
 // ============================================================
 #define TANK_HEIGHT_MM   200.0f
 #define TANK_CAPACITY_L  20.0f
-#define TEMP_THRESHOLD   29.0f
+#define TEMP_THRESHOLD   30.0f
 
 // ============================================================
 // VARIAVEIS GLOBAIS
@@ -120,6 +120,17 @@ static volatile bool g_relay_ln3 = false;
 // a automacao nao interfere por MANUAL_OVERRIDE_TIME_MS
 #define MANUAL_OVERRIDE_TIME_MS (5 * 60 * 1000)  // 5 minutos
 static volatile uint32_t g_ln1_manual_override_until = 0;  // timestamp em ms
+static volatile bool g_ln1_manual = false;  // true = usuario ligou manualmente
+
+// TPA - Troca Parcial de Agua (state machine)
+// Fases: 0=inativo, 1=drenando(bomba1), 2=enchendo(bomba2), 3=monitorando
+#define TPA_DRAIN_TARGET  25.0f   // Drenar ate 25% do tanque
+#define TPA_FILL_TARGET  100.0f   // Encher ate 100%
+#define TPA_REFILL_MARGIN  3.0f   // Se cair mais que 3% do target, re-enche
+static volatile int g_tpa_phase = 0;
+static volatile bool g_tpa_active = false;
+static volatile uint32_t g_tpa_monitor_until = 0;  // monitorar por 2min apos encher
+#define TPA_MONITOR_TIME_MS (2 * 60 * 1000)
 
 // ============================================================
 // I2C SWITCHING - Alterna entre sensores e OLED
@@ -871,11 +882,13 @@ static void build_sensor_json(void) {
         "{\"temperatura\":%.2f,\"umidade\":%.2f,\"distancia\":%d,"
         "\"nivel\":%.2f,\"volume\":%.2f,"
         "\"corAgua\":\"%s\",\"corR\":%d,\"corG\":%d,\"corB\":%d,"
+        "\"tpa\":{\"active\":%s,\"phase\":%d},"
         "\"wifiStatus\":true,\"contadorLeituras\":%d,\"deviceIp\":\"%s\","
         "\"relays\":{\"LN1\":%s,\"LN2\":%s,\"LN3\":%s},"
         "\"sensores\":{\"aht10\":%s,\"vl53l0x\":%s,\"tcs34725\":%s}}",
         g_temp, g_hum, g_dist, g_nivel, g_volume,
         g_cor_nome, g_cor_r, g_cor_g, g_cor_b,
+        g_tpa_active?"true":"false", g_tpa_phase,
         g_count, g_ip,
         g_relay_ln1?"true":"false", g_relay_ln2?"true":"false", g_relay_ln3?"true":"false",
         g_aht_ok?"true":"false", g_vl53_ok?"true":"false", g_tcs_ok?"true":"false");
@@ -952,10 +965,13 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
                              (strstr(request, "\"estado\":true") != NULL);
                 relay_set(relay_num, state);
             }
-            // Marca override manual para o rele 1 (ventilador)
+            // Marca controle manual para o rele 1 (ventilador)
             if (relay_num == 1) {
                 g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
-                printf("[RELAY] Override manual LN1 por 5min\n");
+                // Se usuario LIGOU manualmente, flag fica true ate desligar
+                bool ln1_now = g_relay_ln1;
+                g_ln1_manual = ln1_now;
+                printf("[RELAY] LN1 manual=%s\n", ln1_now ? "ON" : "OFF");
             }
         }
         snprintf(json_buf, sizeof(json_buf),
@@ -975,7 +991,63 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     else if (strstr(request, "POST /feed") || strstr(request, "POST /servo")) {
         servo_feed();
         snprintf(http_resp, sizeof(http_resp),
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: 49\r\n\r\n{\"success\":true,\"message\":\"Alimentacao executada\"}");
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: 49\r\n\r\n{\"success\":true,\"message\":\"Alimentacao executada\"}");
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "POST /tpa")) {
+        // Inicia TPA - Troca Parcial de Agua
+        if (!g_tpa_active) {
+            g_tpa_active = true;
+            g_tpa_phase = 1;  // Fase 1: drenando
+            relay_set(2, true);  // Liga bomba 1 (drenar)
+            relay_set(3, false); // Garante bomba 2 desligada
+            printf("[TPA] INICIADO - Drenando ate %.0f%%\n", TPA_DRAIN_TARGET);
+        }
+        snprintf(json_buf, sizeof(json_buf),
+            "{\"success\":true,\"tpa\":{\"active\":true,\"phase\":%d},\"message\":\"TPA iniciada\"}", g_tpa_phase);
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
+            (int)strlen(json_buf), json_buf);
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "POST /tpa-stop")) {
+        // Para TPA manualmente
+        g_tpa_active = false;
+        g_tpa_phase = 0;
+        relay_set(2, false);
+        relay_set(3, false);
+        printf("[TPA] PARADO manualmente\n");
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: 52\r\n\r\n{\"success\":true,\"message\":\"TPA parada com sucesso\"}");
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "POST /all-on")) {
+        relay_set(1, true); sleep_ms(500);
+        relay_set(2, true); sleep_ms(500);
+        relay_set(3, true);
+        g_ln1_manual = true;
+        g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
+        snprintf(json_buf, sizeof(json_buf),
+            "{\"success\":true,\"relays\":{\"LN1\":true,\"LN2\":true,\"LN3\":true}}");
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
+            (int)strlen(json_buf), json_buf);
+        send_len = strlen(http_resp);
+        tcp_write(tpcb, http_resp, send_len, 0);
+    }
+    else if (strstr(request, "POST /all-off")) {
+        relay_set(1, false); relay_set(2, false); relay_set(3, false);
+        g_tpa_active = false; g_tpa_phase = 0;  // Cancela TPA tambem
+        g_ln1_manual = false;
+        g_ln1_manual_override_until = to_ms_since_boot(get_absolute_time()) + MANUAL_OVERRIDE_TIME_MS;
+        snprintf(json_buf, sizeof(json_buf),
+            "{\"success\":true,\"relays\":{\"LN1\":false,\"LN2\":false,\"LN3\":false}}");
+        snprintf(http_resp, sizeof(http_resp),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s",
+            (int)strlen(json_buf), json_buf);
         send_len = strlen(http_resp);
         tcp_write(tpcb, http_resp, send_len, 0);
     }
@@ -1073,9 +1145,10 @@ void read_sensors(void) {
     if (g_nivel > 100) g_nivel = 100;
     g_volume = (g_nivel / 100.0f) * TANK_CAPACITY_L;
     
-    // Automacao: liga ventilador se temp alta (respeita override manual)
+    // Automacao: liga ventilador se temp alta
+    // Se usuario ligou manualmente, automacao NAO desliga
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
-    bool manual_override = (now_ms < g_ln1_manual_override_until);
+    bool manual_override = g_ln1_manual || (now_ms < g_ln1_manual_override_until);
     
     if (!manual_override) {
         if (g_temp > TEMP_THRESHOLD && !g_relay_ln1) {
@@ -1084,6 +1157,40 @@ void read_sensors(void) {
         } else if (g_temp <= (TEMP_THRESHOLD - 1.0f) && g_relay_ln1) {
             relay_set(1, false);
             printf("[AUTO] Ventilador OFF\n");
+        }
+    }
+    
+    // TPA - Troca Parcial de Agua (state machine)
+    if (g_tpa_active) {
+        switch (g_tpa_phase) {
+            case 1: // Fase 1: Drenando (Bomba 1 ON ate 25%)
+                if (g_nivel <= TPA_DRAIN_TARGET) {
+                    relay_set(2, false);  // Desliga bomba 1
+                    relay_set(3, true);   // Liga bomba 2 (encher)
+                    g_tpa_phase = 2;
+                    printf("[TPA] Fase 2: Enchendo (nivel=%.1f%%)\n", g_nivel);
+                }
+                break;
+            case 2: // Fase 2: Enchendo (Bomba 2 ON ate 100%)
+                if (g_nivel >= TPA_FILL_TARGET) {
+                    relay_set(3, false);  // Desliga bomba 2
+                    g_tpa_phase = 3;
+                    g_tpa_monitor_until = now_ms + TPA_MONITOR_TIME_MS;
+                    printf("[TPA] Fase 3: Monitorando nivel por 2min\n");
+                }
+                break;
+            case 3: // Fase 3: Monitorando - se nivel cair, re-enche
+                if (g_nivel < (TPA_FILL_TARGET - TPA_REFILL_MARGIN)) {
+                    relay_set(3, true);  // Re-liga bomba 2
+                    g_tpa_phase = 2;
+                    printf("[TPA] Re-enchendo (nivel caiu p/ %.1f%%)\n", g_nivel);
+                } else if (now_ms > g_tpa_monitor_until) {
+                    // Fim do monitoramento
+                    g_tpa_active = false;
+                    g_tpa_phase = 0;
+                    printf("[TPA] CONCLUIDA com sucesso!\n");
+                }
+                break;
         }
     }
 }
