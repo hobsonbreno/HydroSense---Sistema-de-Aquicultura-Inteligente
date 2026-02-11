@@ -64,4 +64,4 @@ node_modules/
 .hydrosense.log
 
 # FreeRTOS build artifacts (keep source)
-FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/build/
+FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/build/build_v10_final/
