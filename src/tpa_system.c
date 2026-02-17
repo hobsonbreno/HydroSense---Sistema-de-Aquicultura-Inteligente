@@ -41,8 +41,8 @@ void tpa_init(void) {
     tpa_ctrl.tipo = TPA_NENHUMA;
     
     printf("✅ Sistema TPA inicializado!\n");
-    printf("   📋 TPA Sujeira: 25%% -> 100%%\n");
-    printf("   📋 TPA Rotatividade: 50%% -> 100%% (a cada 2h)\n");
+    printf("   📋 TPA Sujeira: 25%% -> 90%%\n");
+    printf("   📋 TPA Rotatividade: 50%% -> 90%% (a cada 2h)\n");
 }
 
 // ============================================================
@@ -126,13 +126,13 @@ bool tpa_iniciar_sujeira(void) {
     
     printf("╔══════════════════════════════════════════════════════════════╗\n");
     printf("║  🚨 INICIANDO TPA POR SUJEIRA                                ║\n");
-    printf("║  📋 Objetivo: Drenar até 25%% (5L) -> Encher até 100%% (20L)  ║\n");
+    printf("║  📋 Objetivo: Drenar até 25%% (5L) -> Encher até 90%% (18L)   ║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n");
     
     tpa_ctrl.tipo = TPA_SUJEIRA;
     tpa_ctrl.estado = TPA_STATE_DRENANDO;
     tpa_ctrl.nivel_alvo_min = TPA_SUJEIRA_NIVEL_MIN;   // 25%
-    tpa_ctrl.nivel_alvo_max = TPA_SUJEIRA_NIVEL_MAX;   // 100%
+    tpa_ctrl.nivel_alvo_max = TPA_SUJEIRA_NIVEL_MAX;   // 90%
     tpa_ctrl.inicio_timestamp = to_ms_since_boot(get_absolute_time());
     tpa_ctrl.sucesso = false;
     snprintf(tpa_ctrl.motivo, sizeof(tpa_ctrl.motivo), "Sujeira/lodo detectado pelo sensor de cor");
@@ -152,13 +152,13 @@ bool tpa_iniciar_rotatividade(void) {
     
     printf("╔══════════════════════════════════════════════════════════════╗\n");
     printf("║  🔄 INICIANDO TPA POR ROTATIVIDADE (Hidroponia)              ║\n");
-    printf("║  📋 Objetivo: Drenar até 50%% (10L) -> Encher até 100%% (20L) ║\n");
+    printf("║  📋 Objetivo: Drenar até 50%% (10L) -> Encher até 90%% (18L) ║\n");
     printf("╚══════════════════════════════════════════════════════════════╝\n");
     
     tpa_ctrl.tipo = TPA_ROTATIVIDADE;
     tpa_ctrl.estado = TPA_STATE_DRENANDO;
     tpa_ctrl.nivel_alvo_min = TPA_ROTATIVIDADE_NIVEL_MIN;   // 50%
-    tpa_ctrl.nivel_alvo_max = TPA_ROTATIVIDADE_NIVEL_MAX;   // 100%
+    tpa_ctrl.nivel_alvo_max = TPA_ROTATIVIDADE_NIVEL_MAX;   // 90%
     tpa_ctrl.inicio_timestamp = to_ms_since_boot(get_absolute_time());
     tpa_ctrl.sucesso = false;
     snprintf(tpa_ctrl.motivo, sizeof(tpa_ctrl.motivo), "Rotatividade programada (2h) para hidroponia");

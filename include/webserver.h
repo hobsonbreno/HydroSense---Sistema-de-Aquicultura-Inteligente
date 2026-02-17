@@ -15,7 +15,7 @@
 // Configuração do servidor
 #define WEBSERVER_PORT          80
 #define WEBSERVER_MAX_CLIENTS   4
-#define HTTP_BUFFER_SIZE        4096
+#define HTTP_BUFFER_SIZE        32768  // Aumentado para frontend completo
 
 // Configuração Wi-Fi (Access Point)
 #define WIFI_AP_SSID            "HydroSense"

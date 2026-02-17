@@ -194,6 +194,9 @@ void hydrosense_main_loop(void) {
         // Alimenta o watchdog a cada iteração
         watchdog_update();
         
+        // Processa comandos seriais (SET_TIME, FEED, etc)
+        processar_comando_serial();
+        
         // Leitura dos sensores a cada 5 segundos
         if (current_time - last_sensor_read > 5000) {
             sensores_ler_todos();
