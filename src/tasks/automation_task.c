@@ -50,13 +50,15 @@ void execute_water_level_control(void) {
     SystemStatus_t status;
     get_system_status(&status);
     
-    if (status.water_level_percent < 100.0f && !pump2_is_running() && !tpa_in_progress) {
-        printf("💧 Nível baixo (%.1f%%) - Ligando bomba 2 para completar\n", status.water_level_percent);
+    // CORRIGIDO: Liga bomba 2 somente se nível < 90% (evita transbordamento)
+    if (status.water_level_percent < 90.0f && !pump2_is_running() && !tpa_in_progress) {
+        printf("💧 Nível baixo (%.1f%%) - Ligando bomba 2 para completar até 90%%\n", status.water_level_percent);
         pump2_start();
     }
     
-    if (status.water_level_percent >= 100.0f && pump2_is_running()) {
-        printf("✅ Nível 100%% atingido - Desligando bomba 2\n");
+    // CORRIGIDO: Para a bomba 2 ao atingir 90% (não 100%)
+    if (status.water_level_percent >= 90.0f && pump2_is_running()) {
+        printf("✅ Nível 90%% atingido - Desligando bomba 2 (segurança anti-transbordamento)\n");
         pump2_stop();
     }
 }
@@ -80,13 +82,14 @@ void execute_tpa_if_needed(void) {
                 printf("✅ TPA Fase 1 concluída - Iniciando Fase 2\n");
             }
             
-            if (status.water_level_percent < 100.0f && !pump2_is_running()) {
-                printf("💧 TPA Fase 2: Reabastecendo com água limpa\n");
+            // CORRIGIDO: Enche até 90% para evitar transbordamento
+            if (status.water_level_percent < 90.0f && !pump2_is_running()) {
+                printf("💧 TPA Fase 2: Reabastecendo com água limpa até 90%%\n");
                 pump2_start();
-            } else if (status.water_level_percent >= 100.0f) {
+            } else if (status.water_level_percent >= 90.0f) {
                 pump2_stop();
                 tpa_in_progress = false;
-                printf("✅ TPA CONCLUÍDA com sucesso!\n");
+                printf("✅ TPA CONCLUÍDA com sucesso! (Nível: 90%%)\\n");
                 
                 if (xSemaphoreTake(system_data_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                     g_system_status.tpa_in_progress = false;

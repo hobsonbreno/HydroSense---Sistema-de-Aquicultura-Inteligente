@@ -324,7 +324,7 @@
                         <div class="relay-sub">Motor LN1 · GPIO 17</div>
                         <div class="relay-status-badge badge-off" id="relayBadge1">○ OFF</div>
                         <button class="relay-btn off" id="relayBtn1" onclick="toggleRelay(1)">LIGAR</button>
-                        <div class="auto-label" id="relayAuto1" style="display:none">⚡ Automação (T &gt; 30°C)</div>
+                        <div class="auto-label" id="relayAuto1" style="display:none">⚡ Automação (T &gt; 33°C)</div>
                     </div>
                     <!-- LN2 - Bomba 1 (Esvaziar / TPA) -->
                     <div class="relay-card" id="relayCard2">
@@ -384,8 +384,18 @@
             <div class="card card-alimentacao">
                 <h2>🐟 Sistema de Alimentação</h2>
                 <div class="feed-section">
-                    <p style="margin-bottom:10px; opacity:0.8">Servo SG90 · GPIO 16</p>
-                    <button class="feed-btn" onclick="manualFeeding()">🍽️ Alimentar Agora</button>
+                    <!-- RELÓGIO EM TEMPO REAL -->
+                    <div style="text-align:center; margin-bottom:20px;">
+                        <div id="relogio" style="font-size:3.5rem; font-weight:800; color:#4ECDC4; text-shadow: 0 0 15px rgba(78,205,196,0.4);">
+                            --:--:--
+                        </div>
+                        <div id="dataAtual" style="font-size:1rem; color:#a0b8cc; margin-top:5px;">
+                            -- de -- de ----
+                        </div>
+                        <div style="font-size:0.75rem; color:#7eb8e0; margin-top:3px;">⏰ Alimentação automática: 08:00 e 16:00</div>
+                        <p style="margin:15px 0 10px 0; opacity:0.8; text-align:center;">Servo SG90 · GPIO 16</p>
+                        <button class="feed-btn" onclick="manualFeeding()" style="display:block; margin:0 auto;">🍽️ Alimentar Agora</button>
+                    </div>
                     <div class="feed-info">
                         <div class="feed-info-item">
                             <div class="feed-info-val" id="feedCount">0</div>
@@ -434,7 +444,7 @@
         const PICO_IP       = '10.0.0.181';
         const BACKEND_URL   = 'http://localhost:3000';
         const UPDATE_INTERVAL = 2000;   // polling 2s
-        const TEMP_THRESHOLD  = 30.0;   // limiar do ventilador
+        const TEMP_THRESHOLD  = 33.0;   // limiar do ventilador em 33°C
 
         // Estado global
         let relayStates     = { LN1: false, LN2: false, LN3: false };
@@ -609,9 +619,9 @@
                         tpaLabel.style.display = '';
                     } else if (phase === 2) {
                         phaseText.textContent = '⬆️ Fase 2: Enchendo com água nova';
-                        tpaDetail.textContent = 'Bomba 2 ON — Enchendo até 100% · Nível: ' + nivel.toFixed(0) + '%';
-                        tpaProg.style.width = nivel + '%';
-                        tpaLabel.textContent = '⬆️ Enchendo até 100%';
+                        tpaDetail.textContent = 'Bomba 2 ON — Enchendo até 90% · Nível: ' + nivel.toFixed(0) + '%';
+                        tpaProg.style.width = (nivel / 0.9) + '%';
+                        tpaLabel.textContent = '⬆️ Enchendo até 90%';
                         tpaLabel.style.display = '';
                     } else if (phase === 3) {
                         phaseText.textContent = '👁️ Fase 3: Monitorando nível';
@@ -873,7 +883,7 @@
 
         async function startTPA() {
             if (tpaActive) return;
-            if (!confirm('Iniciar Troca Parcial de Água (TPA)?\\n\\nIsso irá:\\n1. Drenar até 25% do tanque\\n2. Reabastecer até 100%\\n3. Monitorar nível')) return;
+            if (!confirm('Iniciar Troca Parcial de Água (TPA)?\\n\\nIsso irá:\\n1. Drenar até 25% do tanque\\n2. Reabastecer até 90% (anti-transbordamento)\\n3. Monitorar nível')) return;
             try {
                 try {
                     const r = await fetch('http://' + PICO_IP + '/tpa', {
@@ -1058,6 +1068,46 @@
 
         // Verificar alimentação programada a cada 15 segundos
         setInterval(checkScheduledFeeding, 15000);
+
+        // ================================================================
+        // RELÓGIO EM TEMPO REAL
+        // ================================================================
+        function atualizarRelogio() {
+            const agora = new Date();
+            const horas = String(agora.getHours()).padStart(2, '0');
+            const minutos = String(agora.getMinutes()).padStart(2, '0');
+            const segundos = String(agora.getSeconds()).padStart(2, '0');
+            
+            const relogioEl = document.getElementById('relogio');
+            if (relogioEl) {
+                relogioEl.textContent = horas + ':' + minutos + ':' + segundos;
+            }
+            
+            // Atualiza data
+            const meses = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                          'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+            const dia = agora.getDate();
+            const mes = meses[agora.getMonth()];
+            const ano = agora.getFullYear();
+            
+            const dataEl = document.getElementById('dataAtual');
+            if (dataEl) {
+                dataEl.textContent = dia + ' de ' + mes + ' de ' + ano;
+            }
+            
+            // Destaque visual nos horários de alimentação
+            if ((agora.getHours() === 8 || agora.getHours() === 16) && agora.getMinutes() === 0) {
+                relogioEl.style.color = '#FF6B6B';
+                relogioEl.style.textShadow = '0 0 20px rgba(255,107,107,0.6)';
+            } else {
+                relogioEl.style.color = '#4ECDC4';
+                relogioEl.style.textShadow = '0 0 15px rgba(78,205,196,0.4)';
+            }
+        }
+        
+        // Atualiza relógio a cada segundo
+        setInterval(atualizarRelogio, 1000);
+        atualizarRelogio(); // Atualiza imediatamente
 
         // ================================================================
         // INICIALIZAÇÃO

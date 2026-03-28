@@ -52,8 +52,15 @@ void servo_init(void) {
     pwm_init(slice_num, &cfg, true);
     
     servo_inicializado = true;
+    
+    // CORREÇÃO: Posiciona suavemente em 0° e depois desabilita PWM
+    // para evitar impulso/movimento indesejado ao ligar
+    printf("🔧 Posicionando servo em 0° suavemente...\n");
     servo_angle(0); // Posição inicial
-    printf("✅ Servo SG90 inicializado (GPIO %d)\n", SERVO_PIN);
+    sleep_ms(500);  // Aguarda servo estabilizar
+    servo_stop();   // Desabilita PWM para evitar vibração
+    
+    printf("✅ Servo SG90 inicializado (GPIO %d) - posição 0° estável\n", SERVO_PIN);
 }
 
 void servo_alimentar_peixes(const char* origem) {
@@ -92,16 +99,23 @@ void servo_alimentar_peixes(const char* origem) {
         sleep_ms(step_delay);
     }
     
-    // Retorna à posição inicial (igual ao Python)
-    printf("🔄 Retornando à posição inicial...\n");
-    for (int angle = 180; angle >= 0; angle -= 10) {
+    // CORREÇÃO: Retorna à posição inicial com movimento suave e estabilização
+    printf("🔄 Retornando à posição inicial (0°)...\n");
+    
+    // Movimento suave de 180° para 0° em passos menores para precisão
+    for (int angle = 180; angle >= 0; angle -= 5) {
         servo_angle(angle);
-        sleep_ms(100);
+        sleep_ms(50);
     }
     
-    // Para o servo e finaliza
-    printf("⏹️ Parando servo...\n");
+    // Garante posição final exata em 0°
+    servo_angle(0);
+    sleep_ms(500);  // Aguarda servo estabilizar na posição 0°
+    
+    // IMPORTANTE: Desabilita PWM somente após estabilização completa
+    printf("⏹️ Servo estabilizado em 0° - desabilitando PWM...\n");
     servo_stop();
+    sleep_ms(100);  // Pequeno delay adicional
     
     // LEDs de conclusão (como no Python)
     rgb_color_t feed_color = {30, 15, 0};
@@ -126,20 +140,23 @@ void servo_alimentar_peixes(const char* origem) {
 }
 
 void servo_teste_movimento(void) {
-    printf("🧪 Testando Micro Servo SG90...\n");
+    // CORREÇÃO: Removido movimento de teste ao inicializar para evitar desperdício de ração
+    // O servo já foi posicionado em 0° na inicialização
     
-    servo_angle(90);
-    sleep_ms(1000);
-    servo_angle(0);
-    sleep_ms(1000);
-    servo_stop();
-    
-    printf("✅ Servo SG90 testado!\n");
+    printf("🧪 Verificando Micro Servo SG90...\n");
+    printf("   ✓ PWM configurado: 50Hz (20ms período)\n");
+    printf("   ✓ Range: 0° - 180° (1000us - 2000us)\n");
+    printf("   ✓ GPIO: %d\n", SERVO_PIN);
+    printf("   ✓ Posição atual: 0° (repouso)\n");
+    printf("   ⚠️ Teste de movimento DESABILITADO para evitar desperdício de ração\n");
+    printf("   💡 Use comando serial 'FEED' ou botão para testar alimentação\n");
+    printf("✅ Servo SG90 pronto para operação!\n");
 }
 
 void alimentacao_verificar_horarios(void) {
     static bool horarios_executados[FEED_HOURS_COUNT] = {false};
     static uint8_t dia_anterior = 255; // Valor inválido para reset diário
+    static uint32_t ultimo_check_log = 0;
     
     datetime_t dt;
     rtc_get_datetime(&dt);
@@ -151,13 +168,26 @@ void alimentacao_verificar_horarios(void) {
         }
         dia_anterior = dt.day;
         system_status.alimentacoes_hoje = 0;  // Reset do contador diário
-        printf("🔄 Novo dia - Reset dos horários e contador de alimentação\n");
+        printf("🔄 Novo dia (%02d/%02d) - Reset dos horários e contador de alimentação\n", dt.day, dt.month);
     }
     
-    // Verifica se é hora de alimentar
-    if (dt.min == 0 && system_status.alimentacao_auto_habilitada) {
+    // Log periódico de verificação (a cada 60 segundos)
+    uint32_t agora = get_timestamp_ms();
+    if (agora - ultimo_check_log > 60000) {
+        printf("⏰ Verificação alimentação: RTC=%02d:%02d:%02d | Horários: 08:00(%s) 16:00(%s) | Auto=%s\n",
+               dt.hour, dt.min, dt.sec,
+               horarios_executados[0] ? "✓" : "○",
+               horarios_executados[1] ? "✓" : "○",
+               system_status.alimentacao_auto_habilitada ? "ON" : "OFF");
+        ultimo_check_log = agora;
+    }
+    
+    // Verifica se é hora de alimentar (aceita minuto 0 OU minuto 1 para não perder por delay)
+    if ((dt.min == 0 || dt.min == 1) && system_status.alimentacao_auto_habilitada) {
         for (int i = 0; i < FEED_HOURS_COUNT; i++) {
             if (dt.hour == FEED_HOURS[i] && !horarios_executados[i]) {
+                printf("🔔 HORÁRIO DE ALIMENTAÇÃO DETECTADO: %02d:%02d (Programado: %02d:00)\n",
+                       dt.hour, dt.min, FEED_HOURS[i]);
                 horarios_executados[i] = true;
                 char origem[48];
                 snprintf(origem, sizeof(origem), "⏰ PROGRAMADO %02d:00 (#%d do dia)", 

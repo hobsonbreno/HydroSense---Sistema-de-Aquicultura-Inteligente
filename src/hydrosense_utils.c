@@ -1,6 +1,8 @@
 #include "hydrosense_system.h"
 #include "hardware/clocks.h"
+#include "hardware/rtc.h"
 #include <stdio.h>
+#include <string.h>
 
 // ============================================================
 // MELHORIAS v2.2 - Filtro de Média Móvel para Sensores
@@ -380,6 +382,104 @@ bool tpa_verificar_necessario(void) {
     }
     
     return false;
+}
+
+// ============================================================
+// SINCRONIZAÇÃO DE TEMPO DO RTC
+// ============================================================
+
+// Define a hora do RTC manualmente
+void rtc_set_time_manual(uint8_t hour, uint8_t min, uint8_t sec) {
+    datetime_t t;
+    rtc_get_datetime(&t);  // Mantém a data atual
+    
+    t.hour = hour;
+    t.min = min;
+    t.sec = sec;
+    
+    rtc_set_datetime(&t);
+    
+    printf("⏰ RTC atualizado para: %02d:%02d:%02d\n", hour, min, sec);
+}
+
+// Define data e hora completa do RTC
+void rtc_set_datetime_manual(uint16_t year, uint8_t month, uint8_t day,
+                             uint8_t hour, uint8_t min, uint8_t sec) {
+    datetime_t t = {
+        .year = year,
+        .month = month,
+        .day = day,
+        .dotw = 0,  // Será calculado
+        .hour = hour,
+        .min = min,
+        .sec = sec
+    };
+    
+    rtc_set_datetime(&t);
+    
+    printf("📅 RTC atualizado para: %04d-%02d-%02d %02d:%02d:%02d\n", 
+           year, month, day, hour, min, sec);
+}
+
+// Verifica comandos de tempo na serial (formato: SET_TIME HH:MM:SS)
+void processar_comando_serial(void) {
+    int c = getchar_timeout_us(0);
+    static char cmd_buffer[64] = {0};
+    static int cmd_index = 0;
+    
+    if (c == PICO_ERROR_TIMEOUT) return;
+    
+    if (c == '\n' || c == '\r') {
+        cmd_buffer[cmd_index] = '\0';
+        
+        // Comando SET_TIME HH:MM:SS
+        if (strncmp(cmd_buffer, "SET_TIME ", 9) == 0) {
+            int h, m, s;
+            if (sscanf(cmd_buffer + 9, "%d:%d:%d", &h, &m, &s) == 3) {
+                if (h >= 0 && h < 24 && m >= 0 && m < 60 && s >= 0 && s < 60) {
+                    rtc_set_time_manual(h, m, s);
+                } else {
+                    printf("❌ Hora inválida! Formato: SET_TIME HH:MM:SS\n");
+                }
+            }
+        }
+        // Comando SET_DATE YYYY-MM-DD HH:MM:SS
+        else if (strncmp(cmd_buffer, "SET_DATE ", 9) == 0) {
+            int y, mo, d, h, mi, s;
+            if (sscanf(cmd_buffer + 9, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6) {
+                rtc_set_datetime_manual(y, mo, d, h, mi, s);
+            }
+        }
+        // Comando GET_TIME - retorna hora atual
+        else if (strcmp(cmd_buffer, "GET_TIME") == 0) {
+            datetime_t t;
+            rtc_get_datetime(&t);
+            printf("⏰ Hora atual RTC: %04d-%02d-%02d %02d:%02d:%02d\n",
+                   t.year, t.month, t.day, t.hour, t.min, t.sec);
+        }
+        // Comando FEED - alimentação manual
+        else if (strcmp(cmd_buffer, "FEED") == 0) {
+            extern void servo_alimentar_peixes(const char* origem);
+            servo_alimentar_peixes("COMANDO SERIAL");
+        }
+        // Comando HELP
+        else if (strcmp(cmd_buffer, "HELP") == 0) {
+            printf("╔═══════════════════════════════════════════════════════╗\n");
+            printf("║  📋 COMANDOS DISPONÍVEIS                              ║\n");
+            printf("╠═══════════════════════════════════════════════════════╣\n");
+            printf("║  SET_TIME HH:MM:SS    - Define a hora do RTC          ║\n");
+            printf("║  SET_DATE YYYY-MM-DD HH:MM:SS - Define data e hora    ║\n");
+            printf("║  GET_TIME             - Mostra hora atual do RTC      ║\n");
+            printf("║  FEED                 - Alimentação manual            ║\n");
+            printf("║  HELP                 - Mostra este menu              ║\n");
+            printf("╚═══════════════════════════════════════════════════════╝\n");
+        }
+        
+        cmd_index = 0;
+        memset(cmd_buffer, 0, sizeof(cmd_buffer));
+    } else if (cmd_index < (int)sizeof(cmd_buffer) - 1) {
+        cmd_buffer[cmd_index++] = (char)c;
+    }
 }
 
 // WiFi e MQTT (stubs)

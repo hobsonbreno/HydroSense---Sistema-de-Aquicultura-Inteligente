@@ -114,12 +114,12 @@
 // ============================================================
 // TPA por sujeira (sensor de cor detecta lodo)
 #define TPA_SUJEIRA_NIVEL_MIN       25.0f   // Esvazia até 25% (5L)
-#define TPA_SUJEIRA_NIVEL_MAX       100.0f  // Enche até 100% (20L)
+#define TPA_SUJEIRA_NIVEL_MAX       90.0f   // CORRIGIDO: Enche até 90% (18L) para evitar transbordamento
 
 // TPA por rotatividade (hidroponia) - a cada 2 horas
 #define TPA_ROTATIVIDADE_INTERVALO_MS   (2 * 60 * 60 * 1000)  // 2 horas
 #define TPA_ROTATIVIDADE_NIVEL_MIN  50.0f   // Esvazia até 50% (10L)
-#define TPA_ROTATIVIDADE_NIVEL_MAX  100.0f  // Enche até 100% (20L)
+#define TPA_ROTATIVIDADE_NIVEL_MAX  90.0f   // CORRIGIDO: Enche até 90% (18L) para evitar transbordamento
 
 // Cooldown entre TPAs
 #define TPA_COOLDOWN_MS             (5 * 60 * 1000)  // 5 minutos

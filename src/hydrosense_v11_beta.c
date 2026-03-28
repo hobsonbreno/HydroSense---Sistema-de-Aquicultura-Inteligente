@@ -1,6 +1,6 @@
 /**
- * HydroSense v10 FINAL - BitDogLab Completo
- * 
+ * HydroSense v11 Beta (Anti-Sifão) - BitDogLab Completo
+ * NOVIDADE: Logica Anti-Sifao para TPA (Bomba 1 para em 25%, Bomba 2 espera 23%) 
  * HARDWARE BitDogLab + Pico W:
  * - Sensores I2C: GPIO2(SDA)/GPIO3(SCL) via extensor (i2c1 switching)
  * - OLED SSD1306: GPIO14(SDA)/GPIO15(SCL) direto na BitDogLab (i2c1 switching)
@@ -135,13 +135,17 @@ static volatile bool g_ln1_manual = false;  // true = usuario ligou manualmente
 
 // TPA - Troca Parcial de Agua (state machine)
 // Fases: 0=inativo, 1=drenando(bomba1), 2=enchendo(bomba2), 3=monitorando
-#define TPA_DRAIN_TARGET  25.0f   // Drenar ate 25% do tanque
-#define TPA_FILL_TARGET   75.0f   // Encher ate 75% (seguranca - evita peixes pularem)
+// TPA - Troca Parcial de Agua (state machine)
+// Fases: 0=inativo, 1=drenando(b1), 2=espera_sifao(off), 3=enchendo(b2), 4=monitorando
+#define TPA_DRAIN_STOP    25.0f   // Drenar ate 25% (desliga bomba, mas sifao continua)
+#define TPA_SIPHON_TARGET 23.0f   // Espera sifao baixar ate 23% antes de ligar bomba 2
+#define TPA_SAFETY_LOW    20.0f   // Se cair abaixo disso, liga bomba 2 imediatamente (seguranca)
+#define TPA_FILL_TARGET   75.0f   // Encher ate 75%
 #define TPA_REFILL_MARGIN  3.0f   // Se cair mais que 3% do target, re-enche
-#define NIVEL_CRITICO     25.0f   // Nivel critico - reabastece automatico se bomba1/TPA nao estao ativos
+
 static volatile int g_tpa_phase = 0;
 static volatile bool g_tpa_active = false;
-static volatile uint32_t g_tpa_monitor_until = 0;  // monitorar por 2min apos encher
+static volatile uint32_t g_tpa_monitor_until = 0;
 #define TPA_MONITOR_TIME_MS (2 * 60 * 1000)
 
 // ============================================================
@@ -757,7 +761,7 @@ void display_boot(void) {
     oled_clear();
     oled_print_large(10, 5, "HYDRO");
     oled_print_large(10, 25, "SENSE");
-    oled_print(15, 50, "INICIANDO V10...");
+    oled_print(15, 50, "BETA v11.0...");
     oled_update();
 }
 
@@ -846,7 +850,7 @@ static const char *HTML_PAGE =
 "<head>"
 "<meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>HydroSense v10</title>"
+"<title>HydroSense v11 Beta</title>"
 "<style>"
 "*{margin:0;padding:0;box-sizing:border-box}"
 "body{font-family:'Segoe UI',Arial,sans-serif;background:#1a1f2e;color:#fff;min-height:100vh}"
@@ -901,7 +905,7 @@ static const char *HTML_PAGE =
 "</head>"
 "<body>"
 "<div class='header'>"
-"<h1>&#x1F41F; HydroSense v10</h1>"
+"<h1>&#x1F41F; HydroSense v11 Beta</h1>"
 "<p>Sistema Inteligente de Aquicultura &mdash; BitDogLab + Pico W</p>"
 "<span id='badge' class='status-badge status-online'>&#x25CF; Conectado</span>"
 "</div>"
@@ -1023,7 +1027,7 @@ static const char *HTML_PAGE =
 "setInterval(getData,2000);"
 "setInterval(function(){var d=new Date(),h=d.getHours(),m=d.getMinutes(),k=h+':'+m;if((h===8&&m===0)||(h===16&&m===0)){if(lastFeedKey!==k){lastFeedKey=k;var p=h===8?'matutina':'vespertina';speak('Hora de alimentar os peixes! Alimentação '+p+' programada. Despejando 100 gramas de ração.');addLog('Alimentacao programada '+(h===8?'08:00':'16:00'));fd()}}},10000);"
 "updateClock();getData();"
-"addLog('HydroSense v10 iniciando...');"
+"addLog('HydroSense v11 Beta (Anti-Sifão) iniciando...');"
 "addLog('Conectado ao Pico W');"
 "speak('HydroSense conectado. Sistema operacional.');"
 "</script>"
@@ -1181,10 +1185,11 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
         // Inicia TPA - Troca Parcial de Agua
         if (!g_tpa_active && g_vl53_ok && g_nivel > 5.0f) {
             g_tpa_active = true;
+            g_tpa_active = true;
             g_tpa_phase = 1;  // Fase 1: drenando
             relay_set(2, true);  // Liga bomba 1 (drenar)
             relay_set(3, false); // Garante bomba 2 desligada
-            printf("[TPA] INICIADO - Drenando ate %.0f%% (nivel atual=%.1f%%)\n", TPA_DRAIN_TARGET, g_nivel);
+            printf("[TPA] INICIADO v11 - Drenando ate %.1f%% (parada eletrica) -> Sifao ate %.1f%%\n", TPA_DRAIN_STOP, TPA_SIPHON_TARGET);
         } else if (!g_vl53_ok || g_nivel <= 5.0f) {
             printf("[TPA] REJEITADO - sensor=%s nivel=%.1f%%\n", g_vl53_ok?"OK":"FALHA", g_nivel);
         }
@@ -1234,7 +1239,7 @@ static err_t http_recv_cb(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t
     }
     else if (strstr(request, "GET /status")) {
         snprintf(json_buf, sizeof(json_buf),
-            "{\"system\":\"HydroSense v10\",\"wifi\":true,\"ip\":\"%s\","
+            "{\"system\":\"HydroSense v11 Beta\",\"wifi\":true,\"ip\":\"%s\","
             "\"oled\":%s,\"sensores\":{\"aht10\":%s,\"vl53l0x\":%s},"
             "\"relays\":{\"LN1\":%s,\"LN2\":%s,\"LN3\":%s},\"leituras\":%d}",
             g_ip, g_oled_ok?"true":"false",
@@ -1388,11 +1393,11 @@ void read_sensors(void) {
     if (g_nivel >= 75.0f && g_relay_ln3) {
         relay_set(3, false);  // Desliga bomba 2 IMEDIATAMENTE
         printf("[SEGURANCA ABSOLUTA] Bomba 2 DESLIGADA - nivel %.1f%% >= 75%%\n", g_nivel);
-        // Se estava em TPA fase 2, avanca para fase 3
-        if (g_tpa_active && g_tpa_phase == 2) {
-            g_tpa_phase = 3;
+        // Se estava em TPA fase 3, avanca para fase 4
+        if (g_tpa_active && g_tpa_phase == 3) {
+            g_tpa_phase = 4;
             g_tpa_monitor_until = to_ms_since_boot(get_absolute_time()) + TPA_MONITOR_TIME_MS;
-            printf("[TPA] Avancando para fase 3 (monitoramento) por seguranca\n");
+            printf("[TPA] Avancando para fase 4 (monitoramento) por seguranca\n");
         }
     }
     
@@ -1407,12 +1412,12 @@ void read_sensors(void) {
     if (++debug_counter >= 10) {  // A cada 10 ciclos (~20s)
         debug_counter = 0;
         printf("[DEBUG] nivel=%.1f%% TPA=%d B1=%d B2=%d CRITICO=%.0f%%\n", 
-               g_nivel, g_tpa_active, g_relay_ln2, g_relay_ln3, NIVEL_CRITICO);
+               g_nivel, g_tpa_active, g_relay_ln2, g_relay_ln3, TPA_SAFETY_LOW);
     }
     
-    if (!g_tpa_active && !g_relay_ln2 && g_nivel < NIVEL_CRITICO && !g_relay_ln3) {
+    if (!g_tpa_active && !g_relay_ln2 && g_nivel < TPA_SAFETY_LOW && !g_relay_ln3) {
         relay_set(3, true);  // Liga bomba 2 para reabastecer
-        printf("[EMERGENCIA] Bomba 2 LIGADA - nivel critico %.1f%% < %.0f%%\n", g_nivel, NIVEL_CRITICO);
+        printf("[EMERGENCIA] Bomba 2 LIGADA - nivel critico %.1f%% < %.0f%%\n", g_nivel, TPA_SAFETY_LOW);
     }
     
     // Automacao: liga ventilador se temp alta
@@ -1434,35 +1439,46 @@ void read_sensors(void) {
     
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
     
-    // TPA - Troca Parcial de Agua (state machine)
+    // TPA - Troca Parcial de Agua (state machine) v11 Beta
     if (g_tpa_active) {
         switch (g_tpa_phase) {
             case 1: // Fase 1: Drenando (Bomba 1 ON ate 25%)
-                if (g_nivel <= TPA_DRAIN_TARGET) {
-                    relay_set(2, false);  // Desliga bomba 1
-                    relay_set(3, true);   // Liga bomba 2 (encher)
-                    g_tpa_phase = 2;
-                    printf("[TPA] Fase 2: Enchendo (nivel=%.1f%%)\n", g_nivel);
+                if (g_nivel <= TPA_DRAIN_STOP) {
+                    relay_set(2, false);  // Desliga bomba 1 Eletricamente
+                    g_tpa_phase = 2; // Vai para Espera de Sifao
+                    printf("[TPA] Fase 1->2: Bomba 1 OFF (%.1f%%). Aguardando Sifao ate %.1f%%\n", g_nivel, TPA_SIPHON_TARGET);
                 }
                 break;
-            case 2: // Fase 2: Enchendo (Bomba 2 ON ate 75%)
+            
+            case 2: // Fase 2: Espera Sifao (Bombas OFF)
+                // Sai se atingir o alvo do sifao (23%) OU nivel critico de seguranca (20%)
+                if (g_nivel <= TPA_SIPHON_TARGET || g_nivel <= TPA_SAFETY_LOW) {
+                    relay_set(2, false); // Garante bomba 1 off
+                    relay_set(3, true);  // Liga bomba 2 (encher)
+                    g_tpa_phase = 3;
+                    printf("[TPA] Fase 2->3: Sifao acabou (%.1f%%). Enchendo...\n", g_nivel);
+                }
+                break;
+
+            case 3: // Fase 3: Enchendo (Bomba 2 ON ate 75%)
                 if (g_nivel >= TPA_FILL_TARGET) {
                     relay_set(3, false);  // Desliga bomba 2
-                    g_tpa_phase = 3;
+                    g_tpa_phase = 4;
                     g_tpa_monitor_until = now_ms + TPA_MONITOR_TIME_MS;
-                    printf("[TPA] Fase 3: Monitorando nivel (em 75%%) por 2min\n");
+                    printf("[TPA] Fase 3->4: Monitorando nivel (em 75%%) por 2min\n");
                 }
                 break;
-            case 3: // Fase 3: Monitorando - se nivel cair, re-enche
+
+            case 4: // Fase 4: Monitorando - se nivel cair, re-enche
                 if (g_nivel < (TPA_FILL_TARGET - TPA_REFILL_MARGIN)) {
                     relay_set(3, true);  // Re-liga bomba 2
-                    g_tpa_phase = 2;
+                    g_tpa_phase = 3;     // Volta para fase de enchimento
                     printf("[TPA] Re-enchendo (nivel caiu p/ %.1f%%)\n", g_nivel);
                 } else if (now_ms > g_tpa_monitor_until) {
                     // Fim do monitoramento
                     g_tpa_active = false;
                     g_tpa_phase = 0;
-                    printf("[TPA] CONCLUIDA com sucesso!\n");
+                    printf("[TPA] CONCLUIDA com sucesso! (v11 Beta)\n");
                 }
                 break;
         }
@@ -1478,7 +1494,7 @@ int main() {
     sleep_ms(2000);  // Aguarda USB estabilizar
     
     printf("\n\n==========================================\n");
-    printf("  HydroSense v10 - BitDogLab Completo\n");
+    printf("  HydroSense v11 Beta (Anti-Sifão)\n");
     printf("==========================================\n\n");
     
     // === CYW43 ===

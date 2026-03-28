@@ -227,6 +227,12 @@ void buzzer_feedback_botao(char botao);
 void alimentacao_verificar_horarios(void);
 bool alimentacao_is_horario_programado(void);
 
+// Sincronização de tempo via RTC
+void rtc_set_time_manual(uint8_t hour, uint8_t min, uint8_t sec);
+void rtc_set_datetime_manual(uint16_t year, uint8_t month, uint8_t day,
+                             uint8_t hour, uint8_t min, uint8_t sec);
+void processar_comando_serial(void);
+
 // Utilitários
 uint32_t get_timestamp_ms(void);
 void delay_ms(uint32_t ms);
